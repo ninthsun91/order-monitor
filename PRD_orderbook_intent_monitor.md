@@ -7,7 +7,7 @@
 | 상태 | Draft |
 | 대상 | 단일 개발자(운영자 겸), Claude Code 기반 개발 |
 
-> **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5). (4) D5 진행률 알림 추가 — 실현률이 `progress_step_pct`(20%) 경계를 넘을 때마다 중간 알림 (§8 D5, §9). 구현은 M4 코어 전이 검증 후. (5) TTL 청소를 `unconfirmed` 항목 전용으로 제한 — "무이벤트=유효" 원칙과의 모순 해소, 기산점은 `unconfirmed_since`, 기본 7일로 단축 (§12.1). (6) 스트림 헬스/세션 epoch 모델 도입 — 세 스트림 개별 감시, 하나라도 비정상이면 전 디텍터 판정 보류·활성 intent `INTERRUPTED`, diff `U`/`u`는 누락 탐지 전용, 워치독 staleness 스트림별 분리 (§5.1, §5.3, §5.4 신설, §11.1, §12). (7) D3 관통 판정 기준가 수정 — bid 벽의 관통을 best ask가 아닌 같은 side 신호(aggressor 체결가 주 신호 + best_bid 지속 보조 신호)로, 접촉 episode 단위로 판정 (§8 D3). (8) D4 산식을 경로 누적으로 교체 — peak/current 비교는 이벤트 경로를 잃어 무관한 신규 주문을 숨은 물량으로 오산, 체결 근접(`refill_window_ms`) 리필만 인정하고 `ICEBERG_MIN_TRADES`는 aggTrade 메시지 수 기준임을 명시 (§8 D4). (9) D5 상태기계 완결 — 등록 크기 S 정의(APPEARED 발화 시점 current_size 고정), FILLED 귀속 부분 체결 소멸에 `PARTIALLY_EXECUTED` 신설(WITHDRAWN은 PULLED 전용으로 분리), 평가 트리거·동시 발생 우선순위 명시, `INTERRUPTED`를 종국 상태 목록에 편입 (§8 D5, §9.1).
+> **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5). (4) D5 진행률 알림 추가 — 실현률이 `progress_step_pct`(20%) 경계를 넘을 때마다 중간 알림 (§8 D5, §9). 구현은 M4 코어 전이 검증 후. (5) TTL 청소를 `unconfirmed` 항목 전용으로 제한 — "무이벤트=유효" 원칙과의 모순 해소, 기산점은 `unconfirmed_since`, 기본 7일로 단축 (§12.1). (6) 스트림 헬스/세션 epoch 모델 도입 — 세 스트림 개별 감시, 하나라도 비정상이면 전 디텍터 판정 보류·활성 intent `INTERRUPTED`, diff `U`/`u`는 누락 탐지 전용, 워치독 staleness 스트림별 분리 (§5.1, §5.3, §5.4 신설, §11.1, §12). (7) D3 관통 판정 기준가 수정 — bid 벽의 관통을 best ask가 아닌 같은 side 신호(aggressor 체결가 주 신호 + best_bid 지속 보조 신호)로, 접촉 episode 단위로 판정 (§8 D3). (8) D4 산식을 경로 누적으로 교체 — peak/current 비교는 이벤트 경로를 잃어 무관한 신규 주문을 숨은 물량으로 오산, 체결 근접(`refill_window_ms`) 리필만 인정하고 `ICEBERG_MIN_TRADES`는 aggTrade 메시지 수 기준임을 명시 (§8 D4). (9) D5 상태기계 완결 — 등록 크기 S 정의(APPEARED 발화 시점 current_size 고정), FILLED 귀속 부분 체결 소멸에 `PARTIALLY_EXECUTED` 신설(WITHDRAWN은 PULLED 전용으로 분리), 평가 트리거·동시 발생 우선순위 명시, `INTERRUPTED`를 종국 상태 목록에 편입 (§8 D5, §9.1). (10) 알림 억제 범위 분리 + 핵심 알림 outbox — 가격 버킷 쿨다운은 D1/D2 전용, D5 종국 알림은 `(intent_id, terminal_state)` 멱등 키에 쿨다운 미적용, SQLite `alerts_outbox` 선기록으로 재시작 유실 방지 (§9.2, §9.4 신설, §12).
 >
 > **v1.1 개정 (2026-07-11)**: M1 스파이크 실측 결과 top-20 창의 실제 폭이 현재가 ±$0.2~5 수준으로, "현재가 근처 20레벨로 충분" 가정이 본 시스템의 실제 목적(원거리 고래 벽 감시, 예: 61k의 1.3k BTC bid)과 어긋남이 확인됨. diff 스트림을 **full book 재구성 없이 "대형 레벨 이벤트 탭"으로만** 병행 사용하는 벽 레지스트리(wall registry)를 도입 (§5.1, §6, §7, §8, §10, §12 개정).
 
@@ -280,7 +280,7 @@ EXECUTION_CONFIRMED  INTENT_WITHDRAWN   EXECUTION_INFERRED_ABOVE
 
 **진행률 알림 (v1.2)**: 등록된 인텐트에 대해, 실현률(케이스 1 계열 = 레벨 체결 누적/S, 케이스 2 계열 = 상위 구간 추정 누적/S — 계열별 독립 추적)이 `PROGRESS_STEP_PCT`(0.2) 경계를 넘을 때마다 진행률 알림을 1회 발화한다.
 - 발화는 `(인텐트, 계열, 경계값)`당 1회. 종국 상태 도달 시 중단 — 확정/추정 임계(`REALIZE_PCT` 0.6) 도달 경계는 확정/추정 알림 자체가 대체하므로 기본값 기준 실효 경계는 20%, 40%다
-- 진행률 알림은 dedup 키에 경계값을 포함하여 `ALERT_COOLDOWN`을 우회한다 (§9.2) — 빠른 흡수에서 연속 경계 도달이 쿨다운에 먹히면 기능이 성립하지 않음
+- 진행률 알림의 dedup 키는 `(intent_id, 계열, 경계값)`이며 시간 쿨다운을 적용하지 않는다 (§9.2 v1.2) — 빠른 흡수에서 연속 경계 도달이 쿨다운에 먹히면 기능이 성립하지 않음
 - on/off는 알림 정책(`alerts.send_d5_progress`, 기본 on)에서 제어 — 기존 `send_d1`/`send_d2` 관례와 동일. 재시작 시 인텐트와 함께 진행률 커서도 소멸 (§12 원칙과 일치, 복원하지 않음)
 - 구현 순서: M4 코어 상태기계(전이·종국 평가) 단위 테스트 통과 후 마지막 항목으로 추가 — 구조 변경 없는 순수 추가 기능이므로 선행 준비 불필요
 
@@ -299,11 +299,14 @@ EXECUTION_CONFIRMED  INTENT_WITHDRAWN   EXECUTION_INFERRED_ABOVE
 | D3, D4 단독 | 발송 안 함 (D5 입력 전용) | 로그/DB에는 기록 |
 | Watchdog `FEED_STALE` / `PROCESS_DOWN` | **발송** | 운영 알림 |
 
-### 9.2 스팸 억제
+### 9.2 스팸 억제 (v1.2 — 범위 분리)
 
-- dedup 키: `(detector, side, price_bucket)` — `price_bucket`은 가격을 `BUCKET_SIZE`(50 USDT)로 양자화
-- 키당 쿨다운 `ALERT_COOLDOWN`(300s)
-- **예외 (v1.2)**: D5 진행률 알림은 dedup 키가 `(detector, side, price_bucket, 계열, 경계값)` — 경계값이 키에 포함되므로 연속 경계 도달이 쿨다운에 억제되지 않는다 (같은 경계의 중복 발화만 차단)
+억제 메커니즘은 알림 종류별로 분리한다. 가격 버킷 쿨다운을 전 알림에 일괄 적용하면, 같은 버킷의 서로 다른 intent 두 개가 5분 내 확정될 때 두 번째 **핵심** 알림이 삼켜진다 — D5 종국 알림은 intent당 1회만 발생하므로 시간 쿨다운은 중복을 막는 게 아니라 진짜 신호만 잃는다.
+
+- **D1/D2 (노이즈 억제 전용)**: dedup 키 `(detector, side, price_bucket)` — `price_bucket`은 가격을 `BUCKET_SIZE`(50 USDT)로 양자화. 키당 쿨다운 `ALERT_COOLDOWN`(300s)
+- **watchdog**: dedup 키 `(알림 종류, 스트림)` + `ALERT_COOLDOWN` (플래핑 스팸 방지)
+- **D5 종국 알림**: dedup 키 `(intent_id, terminal_state)`, **시간 쿨다운 미적용** — 이 키는 억제용이 아니라 재전송 멱등성 보장용이다 (§9.4 outbox 연동)
+- **D5 진행률 알림**: dedup 키 `(intent_id, 계열, 경계값)`, 시간 쿨다운 미적용 — 같은 경계의 중복 발화만 차단
 - Telegram Bot API 레이트리밋 대응: 발송 큐 + 초당 발송 상한, 실패 시 재시도(백오프)
 
 ### 9.3 메시지 포맷 (예)
@@ -332,6 +335,15 @@ EXECUTION_CONFIRMED  INTENT_WITHDRAWN   EXECUTION_INFERRED_ABOVE
 ```
 
 발송 채널: Telegram Bot API (`sendMessage`), 대상 chat_id는 설정값. 봇 토큰은 환경변수로만 주입 (파일/코드에 저장 금지).
+
+### 9.4 핵심 알림 outbox (v1.2)
+
+인메모리 발송 큐만으로는 확정 알림이 큐에 있는 상태에서 프로세스가 죽으면 소리 없이 유실된다 — 핵심 신호에서의 조용한 실패(§11.1 1순위 리스크). 따라서:
+
+- **D5 종국 알림**(`EXECUTION_CONFIRMED`/`EXECUTION_INFERRED_ABOVE`)은 SQLite `alerts_outbox` 테이블에 **선기록 후** 발송 큐에 넣는다. Telegram 발송 확인 시 sent 마킹
+- 재시작 시 미발송(unsent) 행을 재전송한다. §9.2의 멱등 키 `(intent_id, terminal_state)`가 중복 발송을 차단하므로 재전송은 안전하다. 메시지에는 원 이벤트 시각을 표기한다 (지연 발송임을 수신자가 알 수 있게)
+- **적용 범위 한정**: D2·D5 진행률 알림은 시효성 신호라 재시작 후 재전송 가치가 없고(다음 경계/버스트가 대체), watchdog 알림은 프로세스 사망 시 외부 경량 워치독 소관이므로 — outbox는 D5 종국 알림 전용
+- 구현 시점: **M4** (D5와 함께). `walls` 테이블을 M1로 선행 도입한 것과 같은 패턴이며, 전체 영속화(M6, §12)와 별개
 
 ## 10. 설정 (config.yaml)
 
@@ -410,7 +422,7 @@ watchdog:
 
 ## 12. 영속화
 
-- SQLite 단일 파일: `events`(디텍터 이벤트), `intents`(상태기계 이력), `walls`(벽 레지스트리 현재 상태, v1.1), `trades_sample`(선택)
+- SQLite 단일 파일: `events`(디텍터 이벤트), `intents`(상태기계 이력), `walls`(벽 레지스트리 현재 상태, v1.1), `alerts_outbox`(핵심 알림 outbox, v1.2 — §9.4, M4 선행), `trades_sample`(선택)
 - 목적: 임계치 튜닝, 사후 분석, 오탐 리뷰 + **벽 레지스트리 복원(v1.1)**. 리플레이 백테스트는 v2
 - 재시작 시 인메모리 상태는 복원하지 않는다 — 진행 중이던 intent는 유실됨을 수용 (단순성 우선). DB에는 `INTERRUPTED`로 마킹. **(v1.2)** 이 마킹은 재시작만이 아니라 모든 epoch 종료(§5.4 — 스트림 단절·staleness·diff U/u 갭)에 동일하게 적용한다
 

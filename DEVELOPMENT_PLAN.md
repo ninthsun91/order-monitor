@@ -106,7 +106,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [ ] D2 볼륨 버스트: 방향 분리 집계 + 합산 모드, `BURST_COOLDOWN` (PRD §8 D2)
 - [ ] Telegram 발송기: 비동기 큐, 초당 상한, 실패 시 백오프 재시도 (PRD §9.2, §11.1)
 - [ ] 토큰은 `TELEGRAM_BOT_TOKEN` 환경변수로만 주입
-- [ ] dedup: `(detector, side, price_bucket)` 키 + `ALERT_COOLDOWN`
+- [ ] dedup **(v1.2 — D1/D2 전용)**: `(detector, side, price_bucket)` 키 + `ALERT_COOLDOWN` (D5는 intent 기반 별도 — PRD §9.2, M4에서 구현)
 - [ ] 알림 on/off 설정 반영 (`send_d1` 기본 off, `send_d2` 기본 on)
 - [ ] 단위 테스트: 지속시간 필터(스푸핑 배제), FILLED/PULLED 분기, dedup/쿨다운
 
@@ -142,6 +142,8 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [ ] **(v1.2)** epoch 종료 시 활성 intent `INTERRUPTED` 마킹 + D3/D4 누적 리셋 (PRD §5.4, §12)
 - [ ] `intents` 개수/시간 상한 (메모리 바운드)
 - [ ] 확정 알림 포맷: 실현률 %, 등록→확정 소요시간 포함 (PRD §9.3), 케이스 2는 "추정" 명시
+- [ ] **(v1.2)** D5 알림 dedup: 종국 `(intent_id, terminal_state)` / 진행률 `(intent_id, 계열, 경계)` — 시간 쿨다운 미적용 (PRD §9.2)
+- [ ] **(v1.2)** `alerts_outbox`: D5 종국 알림 선기록→발송→sent 마킹, 재시작 시 미발송 재전송 (멱등 키 중복 차단, 원 이벤트 시각 표기 — PRD §9.4)
 - [ ] 단위 테스트: 상태 전이 전 경로 (확정 1/2, 부분 체결, 철회, 만료, INTERRUPTED) + 동시 발생 우선순위 케이스
 - [ ] **(코어 전이 테스트 통과 후)** D5 진행률 알림: `progress_step_pct`(0.2) 경계당 1회, 계열(케이스 1/2)별 독립 커서, dedup 키에 경계값 포함해 쿨다운 우회 (PRD §8 D5 진행률 알림, §9.2 예외)
 
@@ -168,7 +170,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 ## M6 — SQLite 영속화 + 임계치 튜닝 루프
 
-- [ ] SQLite 스키마: `events`, `intents`, `trades_sample`(선택) (PRD §12)
+- [ ] SQLite 스키마: `events`, `intents`, `trades_sample`(선택) (PRD §12 — `walls`는 M1, `alerts_outbox`는 M4 선행)
 - [ ] 모든 디텍터 이벤트/상태 전이 기록
 - [ ] 재시작 시 진행 중 intent를 DB에 `INTERRUPTED` 마킹
 - [ ] 1주 데이터로 top-20 잔량 분포 분석 → `SIZE_THRESHOLD` 확정 (오픈 퀘스천 #1)
