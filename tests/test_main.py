@@ -22,5 +22,4 @@ def test_main_loads_config_and_logs(tmp_path, monkeypatch):
 
     record = json.loads(lines[-1])
     assert record["message"] == "config loaded"
-    assert record["exchange"] == "binance"
     assert record["symbol"] == "BTC/USDT"

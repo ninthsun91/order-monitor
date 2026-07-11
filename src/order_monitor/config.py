@@ -60,9 +60,7 @@ class WallTrackerConfig:
 
 @dataclasses.dataclass(frozen=True)
 class AppConfig:
-    exchange: str
     symbol: str
-    depth_stream: str
     thresholds: ThresholdsConfig
     alerts: AlertsConfig
     wall_tracker: WallTrackerConfig
@@ -70,7 +68,7 @@ class AppConfig:
     watchdog: WatchdogConfig
 
 
-_TOP_LEVEL_STR_FIELDS = ("exchange", "symbol", "depth_stream")
+_TOP_LEVEL_STR_FIELDS = ("symbol",)
 _TOP_LEVEL_SECTION_FIELDS = ("thresholds", "alerts", "wall_tracker", "telegram", "watchdog")
 
 

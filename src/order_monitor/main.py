@@ -19,7 +19,7 @@ def main() -> None:
     config = load_config(args.config)
     logger.info(
         "config loaded",
-        extra={"exchange": config.exchange, "symbol": config.symbol},
+        extra={"symbol": config.symbol},
     )
 
 

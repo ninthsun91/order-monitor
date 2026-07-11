@@ -68,12 +68,13 @@ DEVELOPMENT_PLAN 본문에는 드러나지 않지만 이후 작업 시 알아두
 
 PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 참고)으로 M0 산출물 중 설정 스키마가 구스펙 상태가 됨. M1 착수 전 정합화.
 
-- [x] `config.py`: `WallTrackerConfig` 섹션 추가 (`record_min_qty_btc`, `ttl_days`) — 기존 `_build_section` 수동 검증 패턴 유지 (이 로더는 기본값 없이 전 키 필수 — 기본값 100/14는 `config.example.yaml`에 반영)
+- [x] `config.py`: `WallTrackerConfig` 섹션 추가 (`record_min_qty_btc`, `ttl_days`) — 기존 `_build_section` 수동 검증 패턴 유지 (이 로더는 기본값 없이 전 키 필수 — 기본값 100/14는 `config.example.yaml`에 반영. ttl은 이후 PRD v1.2에서 7일로 단축됨)
 - [x] `config.example.yaml`: `thresholds.size_threshold_btc` 300 → **1000** (PRD v1.1 확정값, 오픈 퀘스천 #1 결론)
 - [x] `config.example.yaml`: `wall_tracker` 섹션 추가 (PRD §10 개정본과 일치)
 - [x] `tests/test_config.py`: 새 섹션 로드/누락 키/미지 키/타입 검증 테스트 4건 추가 (누적 12 passed)
 - [x] CLAUDE.md 갱신: 3-스트림 파이프라인, ccxt 탈락 반영, "diff 탭 ≠ full book" 가드레일, 벽 레지스트리 영속화 예외 서술
 - [x] **(v1.2 추가)** config 불변조건 검증: 양수·비율 (0,1]·`record_min < size_threshold`·`heartbeat < stale_seconds`, 위반 테스트 4건 (PRD §10 v1.2 — 16 passed)
+- [x] **(v1.2 검수 4회차)** config 최상위 키 `exchange`·`depth_stream` 삭제 — 설계 고정 사항(§5.1)의 추측성 파라미터화 제거, `symbol`만 유지 (PRD §10 개정 (15), config.py·config.example.yaml·테스트 동반 수정)
 
 **완료 기준**: 새 스키마로 `config.example.yaml` 로드 성공 + 전체 테스트 통과. → **달성** (12 passed, `WallTrackerConfig(record_min_qty_btc=100.0, ttl_days=14.0)` 로드 확인).
 

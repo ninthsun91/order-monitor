@@ -10,9 +10,7 @@ EXAMPLE_CONFIG = Path(__file__).resolve().parent.parent / "config.example.yaml"
 def test_load_example_config():
     config = load_config(EXAMPLE_CONFIG)
 
-    assert config.exchange == "binance"
     assert config.symbol == "BTC/USDT"
-    assert config.depth_stream == "depth20@100ms"
     assert config.thresholds.size_threshold_btc == 1000.0
     assert config.thresholds.iceberg_min_trades == 5
     assert config.alerts.send_d1 is False
@@ -30,7 +28,7 @@ def test_missing_file_raises():
 
 def test_missing_top_level_key_raises(tmp_path):
     bad_config = tmp_path / "config.yaml"
-    bad_config.write_text("exchange: binance\nsymbol: BTC/USDT\n")
+    bad_config.write_text("symbol: BTC/USDT\n")
 
     with pytest.raises(ConfigError, match="missing required top-level keys"):
         load_config(bad_config)

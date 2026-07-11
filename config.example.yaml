@@ -1,6 +1,4 @@
-exchange: binance
 symbol: BTC/USDT
-depth_stream: depth20@100ms
 
 thresholds:
   size_threshold_btc: 1000       # D1/D5 인텐트 기준 (PRD v1.1 확정 — 벽 레지스트리 레벨에 적용)
