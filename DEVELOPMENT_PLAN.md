@@ -87,7 +87,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [ ] WS 클라이언트: `btcusdt@aggTrade` 구독 → `trade_window` deque 적재 + 만료 pop
 - [ ] **(v1.1)** WS 클라이언트: `btcusdt@depth@100ms`(diff) 구독 → **벽 레지스트리 이벤트 탭** (PRD §5.1 설계 결정 2). full book 미유지 — 신규 가격은 `wall_tracker.record_min_qty_btc`(100) 이상일 때만 등록, **추적 중인 가격은 잔량 값 불문 모든 이벤트 처리 (v1.2 유령 벽 방지 — PRD §8 D1 소멸 규칙)**: 잔량 0 = tombstone 소멸, 하한 미만 하락 시 D1 소멸 판정 후 활성 제거. D1 발화 게이트는 `size_threshold_btc`(1000) — 2단 임계치 (PRD §8 D1)
 - [ ] **(v1.1)** `wall_registry` SQLite 영속화 선행 구현 (PRD §12.1 — `walls` 테이블 한정, 전체 영속화는 여전히 M6): 재시작 복원, 청취 공백 시 전체 `unconfirmed` 마킹(`unconfirmed_since` 기록) + 가격별 첫 이벤트로 해제, `first_seen_at` 보존, `ttl_days` 청소는 **unconfirmed 전용** (`unconfirmed_since` 기준 7일, 확인된 벽은 무기한 — PRD §12.1 v1.2)
-- [ ] `level_tracker` 구현: 레벨 생애주기 필드 (PRD §7)
+- [ ] `level_tracker` 구현: top-20 크기 + 체결 귀속 `{price, side, current_size, cum_traded_at_level}` (PRD §7 v1.2 축소 — 생애주기 필드는 wall_registry로 일원화)
 - [ ] 재연결: 지수 백오프(1s→60s), 24h 강제 단절·ping/pong은 라이브러리 위임 확인 (PRD §5.3)
 - [ ] **(v1.2)** 스트림별 헬스 추적(최종 수신 시각) + 세션 epoch: 하나라도 단절·스테일·diff U/u 갭이면 전 디텍터 판정 보류(상태 적재는 계속), 세 스트림 구독 확인 + 첫 depth 스냅샷 후 새 epoch (PRD §5.4)
 - [ ] **(v1.2)** diff `U`/`u` 연속성 검사 — 누락 탐지 전용(재구성 금지 유지), 갭 시 청취 공백 취급(레지스트리 전체 unconfirmed) (PRD §5.1)
