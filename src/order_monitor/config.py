@@ -46,6 +46,7 @@ class TelegramConfig:
 @dataclasses.dataclass(frozen=True)
 class WatchdogConfig:
     stale_seconds: float
+    trade_stale_seconds: float
     heartbeat_interval: float
 
 

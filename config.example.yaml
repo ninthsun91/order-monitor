@@ -33,5 +33,6 @@ telegram:
   chat_id: "..."                 # 토큰은 TELEGRAM_BOT_TOKEN env로
 
 watchdog:
-  stale_seconds: 30              # 이 시간 동안 depth 이벤트 없으면 FEED_STALE
+  stale_seconds: 30              # depth·diff 스트림 staleness 임계 (PRD §5.4 v1.2 — 스트림별 감시)
+  trade_stale_seconds: 60        # aggTrade staleness 임계 (체결 발생 시에만 push라 별도 임계)
   heartbeat_interval: 10

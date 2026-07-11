@@ -87,7 +87,8 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [ ] **(v1.1)** `wall_registry` SQLite 영속화 선행 구현 (PRD §12.1 — `walls` 테이블 한정, 전체 영속화는 여전히 M6): 재시작 복원, 청취 공백 시 전체 `unconfirmed` 마킹(`unconfirmed_since` 기록) + 가격별 첫 이벤트로 해제, `first_seen_at` 보존, `ttl_days` 청소는 **unconfirmed 전용** (`unconfirmed_since` 기준 7일, 확인된 벽은 무기한 — PRD §12.1 v1.2)
 - [ ] `level_tracker` 구현: 레벨 생애주기 필드 (PRD §7)
 - [ ] 재연결: 지수 백오프(1s→60s), 24h 강제 단절·ping/pong은 라이브러리 위임 확인 (PRD §5.3)
-- [ ] 재연결 직후 첫 depth 스냅샷 수신 전 판정 보류 플래그
+- [ ] **(v1.2)** 스트림별 헬스 추적(최종 수신 시각) + 세션 epoch: 하나라도 단절·스테일·diff U/u 갭이면 전 디텍터 판정 보류(상태 적재는 계속), 세 스트림 구독 확인 + 첫 depth 스냅샷 후 새 epoch (PRD §5.4)
+- [ ] **(v1.2)** diff `U`/`u` 연속성 검사 — 누락 탐지 전용(재구성 금지 유지), 갭 시 청취 공백 취급(레지스트리 전체 unconfirmed) (PRD §5.1)
 - [ ] 이벤트 타임스탬프는 거래소 시각 사용 (PRD §11.1) — **주의(스파이크 발견)**: spot partial depth(`@depth20@100ms`) 메시지에는 거래소 타임스탬프(`E`)가 없음(`lastUpdateId`/`bids`/`asks`만). 거래소 시각은 aggTrade(`E`/`T`)에만 존재 → depth 이벤트는 로컬 수신 시각 사용 등 구현 시 결정 필요
 - [ ] 연결 이벤트(연결/단절/재연결) 구조화 로그
 - [ ] 메모리 바운드 확인: `trade_window` 시간 상한 동작 테스트
@@ -138,6 +139,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [ ] 전이 3: 상위 구간 D4 누적 ≥ S×`REALIZE_PCT_ABOVE` → `EXECUTION_INFERRED_ABOVE` (케이스 2, 리필 확인분만 합산 — PRD §8 D5 집계 방식. v1.2에서 `_CONFIRMED_ABOVE`에서 개명: 귀속 불가로 "추정" 등급)
 - [ ] 레벨 소멸(REMOVED/tombstone/하한 미달) 시 D5 즉시 종국 평가 — TTL 대기 없음, 소멸 원인 3분류 (PRD §8 D5 v1.2 "소멸 시 종국 평가")
 - [ ] `INTENT_TTL` 만료 → `INTENT_EXPIRED` (로그만)
+- [ ] **(v1.2)** epoch 종료 시 활성 intent `INTERRUPTED` 마킹 + D3/D4 누적 리셋 (PRD §5.4, §12)
 - [ ] `intents` 개수/시간 상한 (메모리 바운드)
 - [ ] 확정 알림 포맷: 실현률 %, 등록→확정 소요시간 포함 (PRD §9.3), 케이스 2는 "추정" 명시
 - [ ] 단위 테스트: 상태 전이 전 경로 (확정 1/2, 철회, 만료)
@@ -151,7 +153,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 ## M5 — Watchdog + systemd + 배포
 
-- [ ] 인프로세스 워치독: `stale_seconds` 동안 depth 없으면 `FEED_STALE` 알림 (PRD §11.1)
+- [ ] 인프로세스 워치독 **(v1.2 스트림별)**: depth·diff는 `stale_seconds`, aggTrade는 `trade_stale_seconds` 초과 시 스트림명 명시한 `FEED_STALE` 알림 + epoch 종료 (PRD §11.1, §5.4)
 - [ ] 하트비트 파일 기록 + 외부 경량 워치독(cron/systemd timer)이 행(hang) 상태 감지 → `PROCESS_DOWN` 알림
 - [ ] systemd 유닛: `Restart=always, RestartSec=5` (또는 Docker `restart: unless-stopped`)
 - [ ] 로그 로테이션 설정
