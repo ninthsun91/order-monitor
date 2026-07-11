@@ -57,7 +57,6 @@ tests/
 
 DEVELOPMENT_PLAN 본문에는 드러나지 않지만 이후 작업 시 알아두면 좋은 사실들:
 
-- **git 커미터 신원 확인 필요 (미해결)**: 초기 커밋이 로컬 자동값 `Sewook Kim <alice@Sewooks-MacBook-Air.local>`로 기록됨. 사용자 실제 이메일은 `ninthsun91@gmail.com`이라 GitHub 기여 귀속이 안 될 수 있음. global git config(`user.name`/`user.email`)가 비어 있음. 다음 커밋 전에 신원을 설정할지 사용자에게 확인할 것. (초기 커밋은 이미 푸시되어 amend 시 force-push 필요하므로 임의로 건드리지 않음)
 - **의존성 실측 상태**: `ccxt 4.5.64` 설치됨, `import ccxt.pro` 정상(asyncio WebSocket), `aiohttp 3.14.1` 동반 설치됨. → M1 ccxt 스파이크 바로 착수 가능.
 - **`config.chat_id`는 문자열만 허용 (M2 주의)**: 현재 스키마는 `telegram.chat_id`를 `str`로 강제. 그런데 Telegram 그룹/채널 chat_id는 흔히 음의 정수(예: `-1001234567890`)라, YAML에 정수로 쓰면 `ConfigError`로 거부됨. `config.example.yaml`이 `"..."`(문자열)이라 이 함정이 가려져 있음. M2에서 Telegram 배선할 때 int→str 허용/강제 변환을 결정할 것.
 - **로컬 `config.yaml`은 gitignore됨**: 레포에는 `config.example.yaml`만 있음. 새 환경/세션에서는 이를 복사해 `config.yaml`을 만들어야 CLI가 동작함.
