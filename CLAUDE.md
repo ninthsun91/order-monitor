@@ -10,6 +10,8 @@ The requirements source of truth is [PRD_orderbook_intent_monitor.md](PRD_orderb
 
 **Commit frequently**: per DEVELOPMENT_PLAN.md's stated rule, commit after each meaningful unit of work (one detector, one loader, one test batch) once tests pass — don't batch until a milestone is done. Commit messages should reference which PRD/DEVELOPMENT_PLAN checkbox they correspond to. Only push on explicit user request or milestone completion.
 
+**Confirm before changing**: when the user raises a PRD/spec critique or requests a change (to PRD, DEVELOPMENT_PLAN, config schema, or code), first state the planned change — what will be edited, where, and why — and wait for explicit confirmation before editing or committing. Don't implement-then-report. This applies for the rest of the project, not just the current session.
+
 ## Commands
 
 ```bash
