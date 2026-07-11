@@ -26,12 +26,14 @@ class ThresholdsConfig:
     realize_pct: float
     realize_pct_above: float
     intent_ttl_seconds: float
+    progress_step_pct: float
 
 
 @dataclasses.dataclass(frozen=True)
 class AlertsConfig:
     send_d1: bool
     send_d2: bool
+    send_d5_progress: bool
     bucket_size_usdt: float
     cooldown_seconds: float
 

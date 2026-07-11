@@ -7,7 +7,7 @@
 | 상태 | Draft |
 | 대상 | 단일 개발자(운영자 겸), Claude Code 기반 개발 |
 
-> **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5).
+> **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5). (4) D5 진행률 알림 추가 — 실현률이 `progress_step_pct`(20%) 경계를 넘을 때마다 중간 알림 (§8 D5, §9). 구현은 M4 코어 전이 검증 후.
 >
 > **v1.1 개정 (2026-07-11)**: M1 스파이크 실측 결과 top-20 창의 실제 폭이 현재가 ±$0.2~5 수준으로, "현재가 근처 20레벨로 충분" 가정이 본 시스템의 실제 목적(원거리 고래 벽 감시, 예: 61k의 1.3k BTC bid)과 어긋남이 확인됨. diff 스트림을 **full book 재구성 없이 "대형 레벨 이벤트 탭"으로만** 병행 사용하는 벽 레지스트리(wall registry)를 도입 (§5.1, §6, §7, §8, §10, §12 개정).
 
@@ -236,6 +236,12 @@ EXECUTION_CONFIRMED  INTENT_WITHDRAWN   EXECUTION_INFERRED_ABOVE
 
 이로써 흡수(케이스 1/2)에 의한 소멸은 벽 소멸 알림(D1 REMOVED, 기본 off)과 별개로 D5 확정/추정 알림이 **보장**되어, "흡수에 의한 소멸"임을 알 수 있다.
 
+**진행률 알림 (v1.2)**: 등록된 인텐트에 대해, 실현률(케이스 1 계열 = 레벨 체결 누적/S, 케이스 2 계열 = 상위 구간 추정 누적/S — 계열별 독립 추적)이 `PROGRESS_STEP_PCT`(0.2) 경계를 넘을 때마다 진행률 알림을 1회 발화한다.
+- 발화는 `(인텐트, 계열, 경계값)`당 1회. 종국 상태 도달 시 중단 — 확정/추정 임계(`REALIZE_PCT` 0.6) 도달 경계는 확정/추정 알림 자체가 대체하므로 기본값 기준 실효 경계는 20%, 40%다
+- 진행률 알림은 dedup 키에 경계값을 포함하여 `ALERT_COOLDOWN`을 우회한다 (§9.2) — 빠른 흡수에서 연속 경계 도달이 쿨다운에 먹히면 기능이 성립하지 않음
+- on/off는 알림 정책(`alerts.send_d5_progress`, 기본 on)에서 제어 — 기존 `send_d1`/`send_d2` 관례와 동일. 재시작 시 인텐트와 함께 진행률 커서도 소멸 (§12 원칙과 일치, 복원하지 않음)
+- 구현 순서: M4 코어 상태기계(전이·종국 평가) 단위 테스트 통과 후 마지막 항목으로 추가 — 구조 변경 없는 순수 추가 기능이므로 선행 준비 불필요
+
 ## 9. 알림 (Telegram)
 
 ### 9.1 발송 정책
@@ -244,6 +250,7 @@ EXECUTION_CONFIRMED  INTENT_WITHDRAWN   EXECUTION_INFERRED_ABOVE
 |---|---|---|
 | D5 `EXECUTION_CONFIRMED` | **발송** | 핵심 신호 (케이스 1) |
 | D5 `EXECUTION_INFERRED_ABOVE` | **발송** (추정 등급 표기) | 케이스 2 — 메시지에 "추정" 명시, 귀속 한계는 §8 D5 판정 의미 참조 |
+| D5 진행률 (`INTENT_PROGRESS`, v1.2) | 설정으로 on/off (기본 on) | 경계당 1회, 쿨다운 우회 (§8 D5 진행률 알림) |
 | D1 `APPEARED` / `FILLED` / `PULLED` | 설정으로 on/off (기본 off) | 튜닝 기간에만 on 권장 |
 | D2 볼륨 버스트 | 설정으로 on/off (기본 on) | |
 | D3, D4 단독 | 발송 안 함 (D5 입력 전용) | 로그/DB에는 기록 |
@@ -253,6 +260,7 @@ EXECUTION_CONFIRMED  INTENT_WITHDRAWN   EXECUTION_INFERRED_ABOVE
 
 - dedup 키: `(detector, side, price_bucket)` — `price_bucket`은 가격을 `BUCKET_SIZE`(50 USDT)로 양자화
 - 키당 쿨다운 `ALERT_COOLDOWN`(300s)
+- **예외 (v1.2)**: D5 진행률 알림은 dedup 키가 `(detector, side, price_bucket, 계열, 경계값)` — 경계값이 키에 포함되므로 연속 경계 도달이 쿨다운에 억제되지 않는다 (같은 경계의 중복 발화만 차단)
 - Telegram Bot API 레이트리밋 대응: 발송 큐 + 초당 발송 상한, 실패 시 재시도(백오프)
 
 ### 9.3 메시지 포맷 (예)
@@ -272,6 +280,12 @@ EXECUTION_CONFIRMED  INTENT_WITHDRAWN   EXECUTION_INFERRED_ABOVE
 상위 구간 리필 확인 체결: 218 BTC (추정 실현률 64%)
 등록→추정: 22m 05s
 ※ 추정 등급 — 체결 주체 귀속 불가 (공개 데이터 한계)
+```
+
+```
+🔵 매수 의도 흡수 진행 40% (케이스 1 계열)
+의도 레벨: 106,250 (bid) · 표시 342 BTC
+체결 누적: 138 BTC (실현률 40% 경계 도달)
 ```
 
 발송 채널: Telegram Bot API (`sendMessage`), 대상 chat_id는 설정값. 봇 토큰은 환경변수로만 주입 (파일/코드에 저장 금지).
@@ -297,10 +311,12 @@ thresholds:
   realize_pct: 0.6               # D5
   realize_pct_above: 0.6
   intent_ttl_seconds: 1800
+  progress_step_pct: 0.2         # D5 진행률 알림 경계 (v1.2). on/off는 alerts.send_d5_progress
 
 alerts:
   send_d1: false
   send_d2: true
+  send_d5_progress: true         # D5 진행률 알림 (v1.2)
   bucket_size_usdt: 50
   cooldown_seconds: 300
 

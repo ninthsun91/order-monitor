@@ -16,10 +16,12 @@ thresholds:
   realize_pct: 0.6               # D5
   realize_pct_above: 0.6
   intent_ttl_seconds: 1800
+  progress_step_pct: 0.2         # D5 진행률 알림 경계 (PRD v1.2). on/off는 alerts.send_d5_progress
 
 alerts:
   send_d1: false
   send_d2: true
+  send_d5_progress: true         # D5 진행률 알림 (PRD v1.2)
   bucket_size_usdt: 50
   cooldown_seconds: 300
 
