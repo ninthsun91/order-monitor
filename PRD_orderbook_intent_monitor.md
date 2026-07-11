@@ -7,7 +7,7 @@
 | 상태 | Draft |
 | 대상 | 단일 개발자(운영자 겸), Claude Code 기반 개발 |
 
-> **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5). (4) D5 진행률 알림 추가 — 실현률이 `progress_step_pct`(20%) 경계를 넘을 때마다 중간 알림 (§8 D5, §9). 구현은 M4 코어 전이 검증 후.
+> **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5). (4) D5 진행률 알림 추가 — 실현률이 `progress_step_pct`(20%) 경계를 넘을 때마다 중간 알림 (§8 D5, §9). 구현은 M4 코어 전이 검증 후. (5) TTL 청소를 `unconfirmed` 항목 전용으로 제한 — "무이벤트=유효" 원칙과의 모순 해소, 기산점은 `unconfirmed_since`, 기본 7일로 단축 (§12.1).
 >
 > **v1.1 개정 (2026-07-11)**: M1 스파이크 실측 결과 top-20 창의 실제 폭이 현재가 ±$0.2~5 수준으로, "현재가 근처 20레벨로 충분" 가정이 본 시스템의 실제 목적(원거리 고래 벽 감시, 예: 61k의 1.3k BTC bid)과 어긋남이 확인됨. diff 스트림을 **full book 재구성 없이 "대형 레벨 이벤트 탭"으로만** 병행 사용하는 벽 레지스트리(wall registry)를 도입 (§5.1, §6, §7, §8, §10, §12 개정).
 
@@ -135,7 +135,7 @@ diff 스트림으로 full book을 유지하려면 REST 스냅샷 + U/u 시퀀스
 | `level_tracker` | 레벨별 생애주기: `{price, side, current_size, peak_size, first_seen_above_threshold, active, cum_traded_at_level}` | depth 이벤트(크기), aggTrade(체결 누적) |
 | `trade_window` | 최근 `WINDOW_SECONDS` 체결 deque: `(ts, price, qty, aggressor_side)` | aggTrade push, 만료분 pop |
 | `intents` | D5 상태기계 인스턴스 목록 (아래 §9) | 디텍터 이벤트 |
-| `wall_registry` (v1.1) | 기록 하한(`wall_tracker.record_min_qty_btc`) 이상 대형 레벨: `{price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed}` | **(v1.2)** 신규 가격은 `record_min_qty_btc` 이상일 때만 등록. 이미 추적 중인 가격은 **잔량 값과 무관하게 모든 diff 이벤트로 덮어쓰기**. 잔량 0(명시적 tombstone) 또는 기록 하한 미만 하락 시 소멸 판정(§8 D1 REMOVED) 후 활성 레지스트리에서 제거 |
+| `wall_registry` (v1.1) | 기록 하한(`wall_tracker.record_min_qty_btc`) 이상 대형 레벨: `{price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since}` | **(v1.2)** 신규 가격은 `record_min_qty_btc` 이상일 때만 등록. 이미 추적 중인 가격은 **잔량 값과 무관하게 모든 diff 이벤트로 덮어쓰기**. 잔량 0(명시적 tombstone) 또는 기록 하한 미만 하락 시 소멸 판정(§8 D1 REMOVED) 후 활성 레지스트리에서 제거 |
 
 메모리 상한: `trade_window`와 `intents`는 시간/개수 상한으로 바운드. 재시작 시 상태는 초기화되며(§12 참고), 이는 수용 가능한 트레이드오프다. **예외(v1.1)**: `wall_registry`는 SQLite에 동기화되어 재시작 시 복원된다 — 원거리 벽은 재관측에 시간이 걸려(청취 누적 방식) 초기화 비용이 크기 때문. 복원 직후 처리는 §12 참고.
 
@@ -323,7 +323,7 @@ alerts:
 wall_tracker:                    # v1.1 — diff 탭 벽 레지스트리
   record_min_qty_btc: 100        # 레지스트리 "기록" 하한 (절대 잔량). 알림 기준이 아님 — 관측 시야 + M6 튜닝 데이터 확보용.
                                  # 100인 이유: 65k의 ~100 BTC급 근접 물량까지 포착 (150이면 누락). 알림은 thresholds.size_threshold_btc가 게이트
-  ttl_days: 14                   # 이 기간 동안 해당 가격에 이벤트가 없으면 레지스트리에서 삭제 (events 이력은 유지)
+  ttl_days: 7                    # unconfirmed 마킹(unconfirmed_since) 후 이 기간 재확인 이벤트가 없으면 삭제 (v1.2 — 확인된 벽은 무기한 유지, events 이력은 보존)
 
 telegram:
   chat_id: "..."                 # 토큰은 TELEGRAM_BOT_TOKEN env로
@@ -372,12 +372,12 @@ watchdog:
 
 원거리 벽 시야는 diff 이벤트의 **청취 누적**으로만 얻어지므로, 재시작 때마다 초기화하면 재수렴에 수 분~수 일이 걸린다. 따라서 `walls` 테이블을 두고 레지스트리를 동기화·복원한다.
 
-- **저장 필드**: `price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed`
+- **저장 필드**: `price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since`
 - **staleness 처리**: 신뢰도 하락은 **청취 공백**(프로세스 다운타임, WS 재연결 갭)에서만 발생한다 — 연결이 살아있는 동안 이벤트가 없다는 것은 "변화 없음"을 뜻하므로 값은 유효하다. 규칙:
-  1. 청취 공백 발생 시(재시작 복원 직후, 재연결 직후) 레지스트리 전체를 `unconfirmed`로 마킹
+  1. 청취 공백 발생 시(재시작 복원 직후, 재연결 직후) 레지스트리 전체를 `unconfirmed`로 마킹하고 `unconfirmed_since`를 기록한다 (이미 unconfirmed인 항목의 `unconfirmed_since`는 갱신하지 않음 — 최초 마킹 시각 유지)
   2. `unconfirmed` 레벨은 D1 APPEARED 신규 발화를 억제하되, `first_seen_at`은 보존한다 (스푸핑 지속시간 필터 타이머를 리셋하지 않음)
-  3. 해당 가격에 diff 이벤트가 1건이라도 도착하면(값 불문 — 절대 잔량이 오므로) 그 레벨의 `unconfirmed`를 해제하고 값을 덮어쓴다. 특정 가격만 조회하는 능동 API는 없으므로(REST는 원거리에 닿지 않음) 수동적 재확인이 유일한 방법이다
-- **TTL 청소**: `last_seen_at`으로부터 `wall_tracker.ttl_days`(기본 14일, 설정값) 동안 이벤트가 없는 레벨은 레지스트리에서 삭제한다. 이는 신뢰도 판정이 아니라 저장 위생 규칙이며, `events` 이력 로그는 삭제하지 않는다 (M6 튜닝 데이터 보존)
+  3. 해당 가격에 diff 이벤트가 1건이라도 도착하면(값 불문 — 절대 잔량이 오므로) 그 레벨의 `unconfirmed`를 해제하고(`unconfirmed_since` 삭제) 값을 덮어쓴다. 특정 가격만 조회하는 능동 API는 없으므로(REST는 원거리에 닿지 않음) 수동적 재확인이 유일한 방법이다
+- **TTL 청소 (v1.2 개정 — `unconfirmed` 전용)**: `unconfirmed_since`로부터 `wall_tracker.ttl_days`(기본 7일, 설정값) 동안 재확인 이벤트가 없는 unconfirmed 레벨은 레지스트리에서 삭제한다. **확인된(confirmed) 벽은 나이를 이유로 삭제하지 않는다** — 연결이 살아있는 동안의 무이벤트는 "변화 없음 = 유효"이므로(위 staleness 원칙), 구 규칙(`last_seen_at` 기준 전체 적용)은 14일간 조용히 서 있는 진짜 원거리 벽을 삭제해 이 원칙과 모순되고, 삭제된 벽은 다음 변경 이벤트까지 재관측이 불가능해 §14의 사각지대를 재생산했다. v1.2 이후 살아있는 연결에서의 소멸은 tombstone/하한 미만 이벤트로 즉시 정리되므로(§8 D1), TTL이 청소할 대상은 "청취 공백 중 소멸해 tombstone을 못 받은 항목"뿐이고 이는 정확히 unconfirmed 집합이다. 기산점이 `last_seen_at`이면 공백 직전 13일 무변경이던 정상 벽이 공백 하루 만에 삭제되므로 `unconfirmed_since` 기준으로 한다. 트레이드오프: 실존하지만 공백 후 7일간 무변경이라 재확인받지 못한 벽의 유실 가능성을 수용한다 (무한 보존 시 쓰레기 무한 누적). `events` 이력 로그는 삭제하지 않는다 (M6 튜닝 데이터 보존)
 
 ## 13. 구현 계획 (마일스톤)
 

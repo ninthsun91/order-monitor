@@ -27,7 +27,7 @@ alerts:
 
 wall_tracker:                    # PRD v1.1 — diff 탭 벽 레지스트리
   record_min_qty_btc: 100        # 레지스트리 "기록" 하한 (알림 아님 — 관측·튜닝 데이터용, 알림은 size_threshold_btc)
-  ttl_days: 14                   # 이 기간 동안 해당 가격에 이벤트 없으면 레지스트리에서 삭제
+  ttl_days: 7                    # unconfirmed 마킹 후 이 기간 재확인 이벤트 없으면 삭제 (PRD §12.1 v1.2 — 확인된 벽은 무기한 유지)
 
 telegram:
   chat_id: "..."                 # 토큰은 TELEGRAM_BOT_TOKEN env로
