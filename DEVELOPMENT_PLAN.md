@@ -10,6 +10,7 @@
 | 단계 | 내용 | 상태 | 완료일 |
 |---|---|---|---|
 | M0 | 프로젝트 스캐폴딩 | ✅ 완료 | 2026-07-11 |
+| M0.5 | PRD v1.1(벽 레지스트리) 반영 — 기존 스캐폴딩 정합화 | ⬜ 미착수 | |
 | M1 | Ingestion + 상태 모델 + 로그 | ⬜ 미착수 | |
 | M2 | D1 + D2 + Telegram 알림 | ⬜ 미착수 | |
 | M3 | 레벨별 체결 집계 + D3 + D4 | ⬜ 미착수 | |
@@ -63,11 +64,25 @@ DEVELOPMENT_PLAN 본문에는 드러나지 않지만 이후 작업 시 알아두
 - **로깅 이중 출력**: `setup_logging(also_stdout=True)`가 기본. 파일(`RotatingFileHandler`) + 콘솔(stderr) 양쪽에 찍힘. systemd 배포(M5) 시 저널 중복을 피하려면 `also_stdout` 조정 고려.
 - **`_RESERVED_ATTRS` 방식 검증됨**: `JsonFormatter`가 LogRecord 인스턴스에서 예약 속성 집합을 동적으로 구성하므로, Python 3.12가 추가한 `taskName` 속성도 자동으로 걸러짐(로그에 누출 안 됨). `extra=`로 넘긴 커스텀 필드만 JSON에 병합됨.
 
+## M0.5 — PRD v1.1(벽 레지스트리) 반영: 기존 스캐폴딩 정합화
+
+PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 참고)으로 M0 산출물 중 설정 스키마가 구스펙 상태가 됨. M1 착수 전 정합화.
+
+- [ ] `config.py`: `WallTrackerConfig` 섹션 추가 (`record_min_qty_btc: float = 100`, `ttl_days: float = 14`) — 기존 `_build_section` 수동 검증 패턴 유지 (스키마 라이브러리 전환 금지)
+- [ ] `config.example.yaml`: `thresholds.size_threshold_btc` 300 → **1000** (PRD v1.1 확정값, 오픈 퀘스천 #1 결론)
+- [ ] `config.example.yaml`: `wall_tracker` 섹션 추가 (PRD §10 개정본과 일치)
+- [ ] `tests/test_config.py`: 새 섹션 로드/누락 키/미지 키/타입 검증 테스트 추가
+- [ ] CLAUDE.md 아키텍처 서술이 3-스트림 구조와 어긋나지 않는지 확인·갱신
+
+**완료 기준**: 새 스키마로 `config.example.yaml` 로드 성공 + 전체 테스트 통과.
+
 ## M1 — Ingestion + 상태 모델 + 로그
 
 - [x] **스파이크(우선 작업)**: ccxt `watch_order_book`이 `btcusdt@depth20@100ms`(partial snapshot)를 diff 스트림이 아니라 정확히 그 스트림으로 구독하는지 검증. 실패 시 `binance-connector-python`으로 전환(콜백→asyncio 브릿지 직접 구현) 후 이어서 진행 → **실패 확정 (2026-07-11)**: ccxt는 `btcusdt@depth@100ms`(diff)로 SUBSCRIBE 프레임을 고정 생성하고 REST 스냅샷+델타 병합으로 로컬 full book을 유지함(실측: 전송 프레임 캡처 + 수신 `depthUpdate` 이벤트 확인, 소스에도 `todo add support for <levels>-snapshots` 주석 존재. `limit=20`은 반환 시 잘라주는 용도일 뿐). fallback인 `binance-connector-python 3.13.0`의 `partial_book_depth(symbol, level=20, speed=100)`은 정확히 목표 스트림 구독 실측 확인(3초간 29msg, 20레벨 스냅샷, 간격 중앙값 100ms) → 결정 기록 참고
 - [ ] WS 클라이언트: `btcusdt@depth20@100ms` 구독 → `order_book` 상태 갱신 (통째 교체)
 - [ ] WS 클라이언트: `btcusdt@aggTrade` 구독 → `trade_window` deque 적재 + 만료 pop
+- [ ] **(v1.1)** WS 클라이언트: `btcusdt@depth@100ms`(diff) 구독 → **벽 레지스트리 이벤트 탭** (PRD §5.1 설계 결정 2). full book 미유지 — `wall_tracker.record_min_qty_btc`(100) 이상 절대 잔량만 `wall_registry`에 덮어쓰기, 잔량 0 이벤트 시 소멸 처리. D1 발화 게이트는 `size_threshold_btc`(1000) — 2단 임계치 (PRD §8 D1)
+- [ ] **(v1.1)** `wall_registry` SQLite 영속화 선행 구현 (PRD §12.1 — `walls` 테이블 한정, 전체 영속화는 여전히 M6): 재시작 복원, 청취 공백 시 전체 `unconfirmed` 마킹 + 가격별 첫 이벤트로 해제, `first_seen_at` 보존, `ttl_days` 청소
 - [ ] `level_tracker` 구현: 레벨 생애주기 필드 (PRD §7)
 - [ ] 재연결: 지수 백오프(1s→60s), 24h 강제 단절·ping/pong은 라이브러리 위임 확인 (PRD §5.3)
 - [ ] 재연결 직후 첫 depth 스냅샷 수신 전 판정 보류 플래그
@@ -170,14 +185,17 @@ PRD와 다르게 결정했거나 PRD가 열어둔 것을 확정한 사항. 날�
 |---|---|---|
 | 2026-07-11 | Python 버전 = 3.12 (Homebrew `python@3.12`) | 3.9는 EOL. 3.14는 생태계 미성숙 + 저사양 VPS에서 소스 빌드 리스크. `binance-connector-python`이 3.13.1+에서 알려진 호환성 버그(binance/binance-connector-python#394) 있어 3.13 계열도 회피. 3.12는 성숙도·wheel 지원·asyncio 성능의 균형점 |
 | 2026-07-11 | WS 라이브러리 = **ccxt 1차 채택**, 한계 시 `binance-connector-python`으로 보완 | ccxt.pro가 무료로 ccxt 본체에 병합되어 asyncio 네이티브(`watch_order_book`/`watch_trades`)로 PRD §6 아키텍처에 바로 부합. 단, 범용 추상화라 `depth20@100ms` partial snapshot을 정확히 구독하는지 미검증 → M1 착수 전 스파이크로 확인 후 실패 시 binance-connector-python(콜백→asyncio 브릿지 직접 구현)으로 전환 |
-| 2026-07-11 | **ccxt 탈락 확정** — M1 스파이크 결과 ccxt `watch_order_book`은 diff 스트림(`@depth@100ms`) 전용, partial snapshot 구독 불가 (M1 스파이크 체크박스 참고) | fallback 후보 실측: (a) `binance-connector-python 3.13.0` `partial_book_depth` — 목표 스트림 정확 구독 확인, 단 websocket-client 기반 콜백/스레드 모델이라 asyncio 브릿지 필요. (b) raw WS(`aiohttp`, ccxt 동반 설치로 이미 의존성에 존재) 직접 구독 — 역시 정상 동작 확인, asyncio 네이티브지만 재연결·keepalive 직접 구현 필요. **WS 클라이언트 구현 착수 시 (a)/(b) 중 택일** (PRD가 지수 백오프·staleness 제어를 명시 요구하므로 어느 쪽이든 재연결 정책 코드는 우리 소유) |
+| 2026-07-11 | **ccxt 탈락 확정** — M1 스파이크 결과 ccxt `watch_order_book`은 diff 스트림(`@depth@100ms`) 전용, partial snapshot 구독 불가 (M1 스파이크 체크박스 참고) | fallback 후보 실측: (a) `binance-connector-python 3.13.0` `partial_book_depth` — 목표 스트림 정확 구독 확인, 단 websocket-client 기반 콜백/스레드 모델이라 asyncio 브릿지 필요. (b) raw WS(`aiohttp`, ccxt 동반 설치로 이미 의존성에 존재) 직접 구독 — 역시 정상 동작 확인, asyncio 네이티브지만 재연결·keepalive 직접 구현 필요. **WS 클라이언트 구현 착수 시 (a)/(b) 중 택일** (PRD가 지수 백오프·staleness 제어를 명시 요구하므로 어느 쪽이든 재연결 정책 코드는 우리 소유). PRD §5.2의 "raw 직접 구현 금지" 조항은 v1.1에서 해제됨 |
+| 2026-07-11 | **PRD v1.1 개정: diff 스트림을 "대형 레벨 이벤트 탭"으로 도입, 벽 레지스트리 신설** (§5.1 한계 조항 번복) | 사용자 확인: 프로젝트의 실제 목적은 원거리 고래 벽(예: 61k의 1.36k BTC bid, Coinglass/Bookmap에서 관측) 감시. 실측: top-20 창은 현재가 ±$0.2~5, REST depth(limit 상한 5000)도 ±$970 한계 → partial/REST로는 원천 관측 불가. Binance diff 이벤트는 가격 거리 무제한 + **절대 잔량** 운반이므로 full book 없이 레벨 단위 추적 가능(자가치유, 드리프트 버그 클래스 비해당). 신규 접속 4분 청취로 61000 레벨 1,364.86 BTC 실포착(Coinglass 표시값과 일치), 부하 초당 ~10 이벤트. Coinglass/Bookmap도 동일 원천의 상시 청취 누적임을 확인 → 외부 API 구독 대안 기각 |
+| 2026-07-11 | **D1 소스 = 벽 레지스트리 전용 + 2단 임계치**: 기록 하한 `record_min_qty_btc` = 100 BTC, D1/D5 인텐트 기준 `size_threshold_btc` = 1000 BTC (기존 300에서 변경, 둘 다 설정값) | top-20 창은 ±$0.2~5(실측)라 벽이 창에 들어온 시점 = 가격 접촉 시점 → top-20 기반 D1 출현 감지는 성립 불가(사용자 지적, 65k의 102 BTC ask도 top-20 밖). top-20은 D3/D4 정밀 계측 + best price 전용으로 축소. 1000 근거(사용자 시장 판단): Binance 현물에서 가격 전달력 있는 유동성은 1k BTC급부터 — 실측상 현재 해당 벽이 61k 하나뿐인 것은 의도된 결과. 기록 하한 100 근거: 65k 102 BTC급 근접 물량 포착(150이면 누락) + M6 임계치 튜닝용 분포 데이터 확보. 세션 중 검토했던 "근접용/원거리용 별도 임계치" 안은 D1 근접 소스 자체가 폐기되어 철회 |
+| 2026-07-11 | 벽 레지스트리 SQLite 영속화 + unconfirmed 플래그 + TTL 14일 — "인메모리 상태 미복원" 원칙(PRD §12)의 유일한 예외 | 원거리 벽 시야는 청취 누적으로만 형성되므로 재시작 초기화 비용이 큼. 신뢰도 하락은 **청취 공백**(재시작·재연결 갭)에서만 발생(연결 중 무이벤트 = 무변화 = 값 유효) → 공백 시 전체 unconfirmed 마킹, 가격별 새 이벤트(절대 잔량)로 자동 해제, 능동 재검증 API는 부재. unconfirmed 중 APPEARED 발화 억제 + `first_seen_at` 보존(스푸핑 필터 타이머 유지). TTL 14일(설정값, 사용자 경험상 2주 초과 지속 벽 드묾)은 신뢰도가 아닌 저장 위생 규칙 — `events` 이력은 보존해 M6 튜닝 데이터 유지 |
 
 ## 오픈 퀘스천 트래킹 (PRD §15)
 
 | # | 질문 | 결정 시점 | 상태 | 결론 |
 |---|---|---|---|---|
-| 1 | `SIZE_THRESHOLD` 초기값 (BTC 수량 vs USDT 노셔널) | M1 데이터 수집 후 / 최종 M6 | ⬜ 미결 | |
+| 1 | `SIZE_THRESHOLD` 초기값 (BTC 수량 vs USDT 노셔널) | M1 데이터 수집 후 / 최종 M6 | ✅ 확정 | BTC 수량 기준, **1000 BTC** (2026-07-11, 사용자 시장 판단 — 전달력 있는 유동성 기준). 기록 하한은 별도 100 BTC(`record_min_qty_btc`). M6에서 실데이터 재검토 여지만 유지 |
 | 2 | 케이스 2 "상위 구간" 범위 제한 필요 여부 | M4 설계 시 | ⬜ 미결 | |
-| 3 | 매도 의도(ask 벽) 대칭 지원 v1 포함 여부 (PRD는 포함 권장) | M0~M1 설계 시 | ⬜ 미결 | |
+| 3 | 매도 의도(ask 벽) 대칭 지원 v1 포함 여부 (PRD는 포함 권장) | M0~M1 설계 시 | ✅ 확정 | v1 포함 — 벽 레지스트리 설계 논의(2026-07-11)에서 사용자가 ask/bid 양측 추적을 전제로 함. 구현 비용도 낮음 |
 | 4 | 알림 언어/포맷: 한국어 고정 vs 템플릿화 | M2 착수 시 | ⬜ 미결 | |
 | 5 | Bookmap 대조 기록 방식 (스크린샷 vs 녹화) | M3 착수 시 | ⬜ 미결 | |
