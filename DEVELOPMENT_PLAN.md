@@ -65,13 +65,13 @@ DEVELOPMENT_PLAN 본문에는 드러나지 않지만 이후 작업 시 알아두
 
 ## M1 — Ingestion + 상태 모델 + 로그
 
-- [ ] **스파이크(우선 작업)**: ccxt `watch_order_book`이 `btcusdt@depth20@100ms`(partial snapshot)를 diff 스트림이 아니라 정확히 그 스트림으로 구독하는지 검증. 실패 시 `binance-connector-python`으로 전환(콜백→asyncio 브릿지 직접 구현) 후 이어서 진행
+- [x] **스파이크(우선 작업)**: ccxt `watch_order_book`이 `btcusdt@depth20@100ms`(partial snapshot)를 diff 스트림이 아니라 정확히 그 스트림으로 구독하는지 검증. 실패 시 `binance-connector-python`으로 전환(콜백→asyncio 브릿지 직접 구현) 후 이어서 진행 → **실패 확정 (2026-07-11)**: ccxt는 `btcusdt@depth@100ms`(diff)로 SUBSCRIBE 프레임을 고정 생성하고 REST 스냅샷+델타 병합으로 로컬 full book을 유지함(실측: 전송 프레임 캡처 + 수신 `depthUpdate` 이벤트 확인, 소스에도 `todo add support for <levels>-snapshots` 주석 존재. `limit=20`은 반환 시 잘라주는 용도일 뿐). fallback인 `binance-connector-python 3.13.0`의 `partial_book_depth(symbol, level=20, speed=100)`은 정확히 목표 스트림 구독 실측 확인(3초간 29msg, 20레벨 스냅샷, 간격 중앙값 100ms) → 결정 기록 참고
 - [ ] WS 클라이언트: `btcusdt@depth20@100ms` 구독 → `order_book` 상태 갱신 (통째 교체)
 - [ ] WS 클라이언트: `btcusdt@aggTrade` 구독 → `trade_window` deque 적재 + 만료 pop
 - [ ] `level_tracker` 구현: 레벨 생애주기 필드 (PRD §7)
 - [ ] 재연결: 지수 백오프(1s→60s), 24h 강제 단절·ping/pong은 라이브러리 위임 확인 (PRD §5.3)
 - [ ] 재연결 직후 첫 depth 스냅샷 수신 전 판정 보류 플래그
-- [ ] 이벤트 타임스탬프는 거래소 시각 사용 (PRD §11.1)
+- [ ] 이벤트 타임스탬프는 거래소 시각 사용 (PRD §11.1) — **주의(스파이크 발견)**: spot partial depth(`@depth20@100ms`) 메시지에는 거래소 타임스탬프(`E`)가 없음(`lastUpdateId`/`bids`/`asks`만). 거래소 시각은 aggTrade(`E`/`T`)에만 존재 → depth 이벤트는 로컬 수신 시각 사용 등 구현 시 결정 필요
 - [ ] 연결 이벤트(연결/단절/재연결) 구조화 로그
 - [ ] 메모리 바운드 확인: `trade_window` 시간 상한 동작 테스트
 
@@ -170,6 +170,7 @@ PRD와 다르게 결정했거나 PRD가 열어둔 것을 확정한 사항. 날�
 |---|---|---|
 | 2026-07-11 | Python 버전 = 3.12 (Homebrew `python@3.12`) | 3.9는 EOL. 3.14는 생태계 미성숙 + 저사양 VPS에서 소스 빌드 리스크. `binance-connector-python`이 3.13.1+에서 알려진 호환성 버그(binance/binance-connector-python#394) 있어 3.13 계열도 회피. 3.12는 성숙도·wheel 지원·asyncio 성능의 균형점 |
 | 2026-07-11 | WS 라이브러리 = **ccxt 1차 채택**, 한계 시 `binance-connector-python`으로 보완 | ccxt.pro가 무료로 ccxt 본체에 병합되어 asyncio 네이티브(`watch_order_book`/`watch_trades`)로 PRD §6 아키텍처에 바로 부합. 단, 범용 추상화라 `depth20@100ms` partial snapshot을 정확히 구독하는지 미검증 → M1 착수 전 스파이크로 확인 후 실패 시 binance-connector-python(콜백→asyncio 브릿지 직접 구현)으로 전환 |
+| 2026-07-11 | **ccxt 탈락 확정** — M1 스파이크 결과 ccxt `watch_order_book`은 diff 스트림(`@depth@100ms`) 전용, partial snapshot 구독 불가 (M1 스파이크 체크박스 참고) | fallback 후보 실측: (a) `binance-connector-python 3.13.0` `partial_book_depth` — 목표 스트림 정확 구독 확인, 단 websocket-client 기반 콜백/스레드 모델이라 asyncio 브릿지 필요. (b) raw WS(`aiohttp`, ccxt 동반 설치로 이미 의존성에 존재) 직접 구독 — 역시 정상 동작 확인, asyncio 네이티브지만 재연결·keepalive 직접 구현 필요. **WS 클라이언트 구현 착수 시 (a)/(b) 중 택일** (PRD가 지수 백오프·staleness 제어를 명시 요구하므로 어느 쪽이든 재연결 정책 코드는 우리 소유) |
 
 ## 오픈 퀘스천 트래킹 (PRD §15)
 
