@@ -133,16 +133,16 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 ## M4 — D5 상태기계 + 확정 알림
 
-- [ ] `INTENT_REGISTERED` 등록 (D1 APPEARED 입력, 크기 S 기록)
+- [ ] `INTENT_REGISTERED` 등록 (D1 APPEARED 입력, S = 발화 시점 `current_size` 고정 — 이후 크기 변화 미반영, PRD §8 D5 v1.2)
 - [ ] 전이 1: 가격 도달 + 체결 누적 ≥ S×`REALIZE_PCT` → `EXECUTION_CONFIRMED` (케이스 1 — "해당 레벨 체결" 확인이지 원 표시 주문의 체결 확인 아님, PRD §8 D5 판정 의미)
-- [ ] 전이 2: PULLED → 케이스 2 누적을 **먼저** 평가(충족 시 `EXECUTION_INFERRED_ABOVE` 우선), 미충족 시 `INTENT_WITHDRAWN` (로그만 — 레벨 실현률·상위 추정 실현률 필드 포함, PRD §8 D5 v1.2)
+- [ ] 전이 2: PULLED → 케이스 2 누적을 **먼저** 평가(충족 시 `EXECUTION_INFERRED_ABOVE` 우선), 미충족 시 `INTENT_WITHDRAWN`; FILLED 귀속 + 실현률 미달은 `PARTIALLY_EXECUTED` (로그만 — 전 종국 레코드에 실현률 필드, PRD §8 D5 v1.2)
 - [ ] 전이 3: 상위 구간 D4 누적 ≥ S×`REALIZE_PCT_ABOVE` → `EXECUTION_INFERRED_ABOVE` (케이스 2, 리필 확인분만 합산 — PRD §8 D5 집계 방식. v1.2에서 `_CONFIRMED_ABOVE`에서 개명: 귀속 불가로 "추정" 등급)
-- [ ] 레벨 소멸(REMOVED/tombstone/하한 미달) 시 D5 즉시 종국 평가 — TTL 대기 없음, 소멸 원인 3분류 (PRD §8 D5 v1.2 "소멸 시 종국 평가")
+- [ ] 레벨 소멸(REMOVED/tombstone/하한 미달) 시 D5 즉시 종국 평가 — TTL 대기 없음, 소멸 원인 4분류 + 동시 발생 우선순위(CONFIRMED > INFERRED_ABOVE > PARTIALLY_EXECUTED > WITHDRAWN, epoch 종료는 무조건 INTERRUPTED) (PRD §8 D5 v1.2)
 - [ ] `INTENT_TTL` 만료 → `INTENT_EXPIRED` (로그만)
 - [ ] **(v1.2)** epoch 종료 시 활성 intent `INTERRUPTED` 마킹 + D3/D4 누적 리셋 (PRD §5.4, §12)
 - [ ] `intents` 개수/시간 상한 (메모리 바운드)
 - [ ] 확정 알림 포맷: 실현률 %, 등록→확정 소요시간 포함 (PRD §9.3), 케이스 2는 "추정" 명시
-- [ ] 단위 테스트: 상태 전이 전 경로 (확정 1/2, 철회, 만료)
+- [ ] 단위 테스트: 상태 전이 전 경로 (확정 1/2, 부분 체결, 철회, 만료, INTERRUPTED) + 동시 발생 우선순위 케이스
 - [ ] **(코어 전이 테스트 통과 후)** D5 진행률 알림: `progress_step_pct`(0.2) 경계당 1회, 계열(케이스 1/2)별 독립 커서, dedup 키에 경계값 포함해 쿨다운 우회 (PRD §8 D5 진행률 알림, §9.2 예외)
 
 **완료 기준 (PRD)**: 케이스 1/2 알림 각 1건 이상 실전 확인.
