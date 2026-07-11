@@ -94,3 +94,43 @@ def test_unknown_key_raises(tmp_path):
 
     with pytest.raises(ConfigError, match="unknown top-level keys"):
         load_config(bad_config)
+
+
+def test_ratio_out_of_range_raises(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace("realize_pct: 0.6", "realize_pct: 1.5")
+    )
+
+    with pytest.raises(ConfigError, match=r"thresholds.realize_pct' must be in \(0, 1\]"):
+        load_config(bad_config)
+
+
+def test_non_positive_value_raises(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace("persist_seconds: 3", "persist_seconds: -1")
+    )
+
+    with pytest.raises(ConfigError, match="thresholds.persist_seconds' must be positive"):
+        load_config(bad_config)
+
+
+def test_record_min_above_size_threshold_raises(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace("record_min_qty_btc: 100", "record_min_qty_btc: 2000")
+    )
+
+    with pytest.raises(ConfigError, match="record_min_qty_btc' must be less than"):
+        load_config(bad_config)
+
+
+def test_heartbeat_not_below_stale_raises(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace("heartbeat_interval: 10", "heartbeat_interval: 30")
+    )
+
+    with pytest.raises(ConfigError, match="heartbeat_interval' must be less than"):
+        load_config(bad_config)

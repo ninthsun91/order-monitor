@@ -114,6 +114,46 @@ def _build_section(cls: type, data: object, section: str) -> object:
     return cls(**kwargs)
 
 
+_RATIO_FIELDS = (
+    "exit_ratio",
+    "fill_attribution",
+    "absorption_min_pct",
+    "realize_pct",
+    "realize_pct_above",
+    "progress_step_pct",
+)
+
+
+def _validate_invariants(config: AppConfig) -> None:
+    sections = (
+        ("thresholds", config.thresholds),
+        ("alerts", config.alerts),
+        ("wall_tracker", config.wall_tracker),
+        ("watchdog", config.watchdog),
+    )
+    for section_name, section in sections:
+        for name, value in dataclasses.asdict(section).items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            if value <= 0:
+                raise ConfigError(f"'{section_name}.{name}' must be positive, got {value}")
+
+    for name in _RATIO_FIELDS:
+        value = getattr(config.thresholds, name)
+        if not 0 < value <= 1:
+            raise ConfigError(f"'thresholds.{name}' must be in (0, 1], got {value}")
+
+    if config.wall_tracker.record_min_qty_btc >= config.thresholds.size_threshold_btc:
+        raise ConfigError(
+            "'wall_tracker.record_min_qty_btc' must be less than 'thresholds.size_threshold_btc'"
+        )
+
+    if config.watchdog.heartbeat_interval >= config.watchdog.stale_seconds:
+        raise ConfigError(
+            "'watchdog.heartbeat_interval' must be less than 'watchdog.stale_seconds'"
+        )
+
+
 def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path)
     if not config_path.exists():
@@ -138,7 +178,7 @@ def load_config(path: str | Path) -> AppConfig:
         name: _check_value_type("<root>", name, raw[name], str) for name in _TOP_LEVEL_STR_FIELDS
     }
 
-    return AppConfig(
+    config = AppConfig(
         **top_level_values,
         thresholds=_build_section(ThresholdsConfig, raw["thresholds"], "thresholds"),
         alerts=_build_section(AlertsConfig, raw["alerts"], "alerts"),
@@ -146,3 +186,5 @@ def load_config(path: str | Path) -> AppConfig:
         telegram=_build_section(TelegramConfig, raw["telegram"], "telegram"),
         watchdog=_build_section(WatchdogConfig, raw["watchdog"], "watchdog"),
     )
+    _validate_invariants(config)
+    return config

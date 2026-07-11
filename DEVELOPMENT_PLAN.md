@@ -73,6 +73,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [x] `config.example.yaml`: `wall_tracker` 섹션 추가 (PRD §10 개정본과 일치)
 - [x] `tests/test_config.py`: 새 섹션 로드/누락 키/미지 키/타입 검증 테스트 4건 추가 (누적 12 passed)
 - [x] CLAUDE.md 갱신: 3-스트림 파이프라인, ccxt 탈락 반영, "diff 탭 ≠ full book" 가드레일, 벽 레지스트리 영속화 예외 서술
+- [x] **(v1.2 추가)** config 불변조건 검증: 양수·비율 (0,1]·`record_min < size_threshold`·`heartbeat < stale_seconds`, 위반 테스트 4건 (PRD §10 v1.2 — 16 passed)
 
 **완료 기준**: 새 스키마로 `config.example.yaml` 로드 성공 + 전체 테스트 통과. → **달성** (12 passed, `WallTrackerConfig(record_min_qty_btc=100.0, ttl_days=14.0)` 로드 확인).
 
@@ -81,6 +82,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 ## M1 — Ingestion + 상태 모델 + 로그
 
 - [x] **스파이크(우선 작업)**: ccxt `watch_order_book`이 `btcusdt@depth20@100ms`(partial snapshot)를 diff 스트림이 아니라 정확히 그 스트림으로 구독하는지 검증. 실패 시 `binance-connector-python`으로 전환(콜백→asyncio 브릿지 직접 구현) 후 이어서 진행 → **실패 확정 (2026-07-11)**: ccxt는 `btcusdt@depth@100ms`(diff)로 SUBSCRIBE 프레임을 고정 생성하고 REST 스냅샷+델타 병합으로 로컬 full book을 유지함(실측: 전송 프레임 캡처 + 수신 `depthUpdate` 이벤트 확인, 소스에도 `todo add support for <levels>-snapshots` 주석 존재. `limit=20`은 반환 시 잘라주는 용도일 뿐). fallback인 `binance-connector-python 3.13.0`의 `partial_book_depth(symbol, level=20, speed=100)`은 정확히 목표 스트림 구독 실측 확인(3초간 29msg, 20레벨 스냅샷, 간격 중앙값 100ms) → 결정 기록 참고
+- [ ] 정규화 **(v1.2)**: 가격·수량은 수신 문자열 → `Decimal` 파싱, 레벨 키는 정규화 Decimal — 판정 경로 float 금지 (PRD §7 수치 표현형)
 - [ ] WS 클라이언트: `btcusdt@depth20@100ms` 구독 → `order_book` 상태 갱신 (통째 교체)
 - [ ] WS 클라이언트: `btcusdt@aggTrade` 구독 → `trade_window` deque 적재 + 만료 pop
 - [ ] **(v1.1)** WS 클라이언트: `btcusdt@depth@100ms`(diff) 구독 → **벽 레지스트리 이벤트 탭** (PRD §5.1 설계 결정 2). full book 미유지 — 신규 가격은 `wall_tracker.record_min_qty_btc`(100) 이상일 때만 등록, **추적 중인 가격은 잔량 값 불문 모든 이벤트 처리 (v1.2 유령 벽 방지 — PRD §8 D1 소멸 규칙)**: 잔량 0 = tombstone 소멸, 하한 미만 하락 시 D1 소멸 판정 후 활성 제거. D1 발화 게이트는 `size_threshold_btc`(1000) — 2단 임계치 (PRD §8 D1)
@@ -89,7 +91,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [ ] 재연결: 지수 백오프(1s→60s), 24h 강제 단절·ping/pong은 라이브러리 위임 확인 (PRD §5.3)
 - [ ] **(v1.2)** 스트림별 헬스 추적(최종 수신 시각) + 세션 epoch: 하나라도 단절·스테일·diff U/u 갭이면 전 디텍터 판정 보류(상태 적재는 계속), 세 스트림 구독 확인 + 첫 depth 스냅샷 후 새 epoch (PRD §5.4)
 - [ ] **(v1.2)** diff `U`/`u` 연속성 검사 — 누락 탐지 전용(재구성 금지 유지), 갭 시 청취 공백 취급(레지스트리 전체 unconfirmed) (PRD §5.1)
-- [ ] 이벤트 타임스탬프는 거래소 시각 사용 (PRD §11.1) — **주의(스파이크 발견)**: spot partial depth(`@depth20@100ms`) 메시지에는 거래소 타임스탬프(`E`)가 없음(`lastUpdateId`/`bids`/`asks`만). 거래소 시각은 aggTrade(`E`/`T`)에만 존재 → depth 이벤트는 로컬 수신 시각 사용 등 구현 시 결정 필요
+- [ ] 이벤트 타임스탬프 **(v1.2 결정 — PRD §11.1)**: 전 이벤트에 `local_monotonic_receive_time` 스탬프, 있으면 `exchange_time`(aggTrade `T`, diff `E` — depth20에는 부재, 스파이크 실측) 병기 저장. 크로스 스트림 비교(D4 refill 근접성 등)·지속시간 타이머·staleness = monotonic, 단일 스트림 시간창(D2)·표기 = exchange
 - [ ] 연결 이벤트(연결/단절/재연결) 구조화 로그
 - [ ] 메모리 바운드 확인: `trade_window` 시간 상한 동작 테스트
 
@@ -123,6 +125,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [ ] D4 아이스버그 (v1.2 경로 누적): episode 내 체결 근접(`REFILL_WINDOW_MS`) 양의 델타만 `refill_added`로 인정, `ICEBERG_MARGIN`(최소 리필량) + 체결→회복 쌍 ≥ `ICEBERG_MIN_TRADES`(aggTrade 메시지 수 기준) (PRD §8 D4)
 - [ ] D3/D4는 알림 발송 없이 로그(및 DB)만 기록 (PRD §9.1)
 - [ ] 단위 테스트: 합성 이벤트 시퀀스로 D3/D4 발화 조건 검증 — 관통 케이스 포함 (체결가 관통 / best 지속 관통 / 아이스버그 플리커는 비관통, PRD §8 D3 v1.2) + D4 경로 케이스 (체결 직후 회복 = 발화 / 체결 후 시간 지난 무관한 추가 = 비발화, PRD §8 D4 v1.2)
+- [ ] **(v1.2)** 결정적 replay 테스트 픽스처: 합성 + 실캡처 시퀀스 재생 — 재연결(epoch 종료/재개)·스트림 순서 역전·이벤트 누락(diff U/u 갭) 케이스 필수 (PRD §13 — M3 완료 기준)
 - [ ] Bookmap 육안 대조 절차 확정 (PRD 오픈 퀘스천 #5: 스크린샷 vs 녹화) → 결정 기록
 
 **완료 기준 (PRD)**: FILLED/PULLED 구분 정확성 육안 검증 (Bookmap 대조).
@@ -145,6 +148,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [ ] **(v1.2)** D5 알림 dedup: 종국 `(intent_id, terminal_state)` / 진행률 `(intent_id, 계열, 경계)` — 시간 쿨다운 미적용 (PRD §9.2)
 - [ ] **(v1.2)** `alerts_outbox`: D5 종국 알림 선기록→발송→sent 마킹, 재시작 시 미발송 재전송 (멱등 키 중복 차단, 원 이벤트 시각 표기 — PRD §9.4)
 - [ ] 단위 테스트: 상태 전이 전 경로 (확정 1/2, 부분 체결, 철회, 만료, INTERRUPTED) + 동시 발생 우선순위 케이스
+- [ ] **(v1.2)** D5 replay 테스트: M3 픽스처 확장 — 재연결·순서 역전·누락 시나리오에서 상태기계 결정성 검증 (PRD §13 — M4 완료 기준)
 - [ ] **(코어 전이 테스트 통과 후)** D5 진행률 알림: `progress_step_pct`(0.2) 경계당 1회, 계열(케이스 1/2)별 독립 커서, dedup 키에 경계값 포함해 쿨다운 우회 (PRD §8 D5 진행률 알림, §9.2 예외)
 
 **완료 기준 (PRD)**: 케이스 1/2 알림 각 1건 이상 실전 확인.
@@ -175,6 +179,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [ ] 재시작 시 진행 중 intent를 DB에 `INTERRUPTED` 마킹
 - [ ] 1주 데이터로 top-20 잔량 분포 분석 → `SIZE_THRESHOLD` 확정 (오픈 퀘스천 #1)
 - [ ] 나머지 임계치 1차 튜닝 (오탐/침묵 리뷰)
+- [ ] **(v1.2)** 오탐 지표 달성 확인: D5 오탐 주 1건 이하(목표 0), D1/D2 시간당 평균 3건 이하 — 초기 제안값, 실데이터로 재조정 후 확정 (PRD §13)
 - [ ] 확정 임계치를 `config.yaml`에 반영하고 결정 기록에 근거 기재
 - [ ] (선택) 일일 요약 메시지 (감지 건수, 재연결 횟수, 업타임)
 
@@ -196,6 +201,7 @@ PRD와 다르게 결정했거나 PRD가 열어둔 것을 확정한 사항. 날�
 | 2026-07-11 | **ccxt 탈락 확정** — M1 스파이크 결과 ccxt `watch_order_book`은 diff 스트림(`@depth@100ms`) 전용, partial snapshot 구독 불가 (M1 스파이크 체크박스 참고) | fallback 후보 실측: (a) `binance-connector-python 3.13.0` `partial_book_depth` — 목표 스트림 정확 구독 확인, 단 websocket-client 기반 콜백/스레드 모델이라 asyncio 브릿지 필요. (b) raw WS(`aiohttp`, ccxt 동반 설치로 이미 의존성에 존재) 직접 구독 — 역시 정상 동작 확인, asyncio 네이티브지만 재연결·keepalive 직접 구현 필요. **WS 클라이언트 구현 착수 시 (a)/(b) 중 택일** (PRD가 지수 백오프·staleness 제어를 명시 요구하므로 어느 쪽이든 재연결 정책 코드는 우리 소유). PRD §5.2의 "raw 직접 구현 금지" 조항은 v1.1에서 해제됨 |
 | 2026-07-11 | **PRD v1.1 개정: diff 스트림을 "대형 레벨 이벤트 탭"으로 도입, 벽 레지스트리 신설** (§5.1 한계 조항 번복) | 사용자 확인: 프로젝트의 실제 목적은 원거리 고래 벽(예: 61k의 1.36k BTC bid, Coinglass/Bookmap에서 관측) 감시. 실측: top-20 창은 현재가 ±$0.2~5, REST depth(limit 상한 5000)도 ±$970 한계 → partial/REST로는 원천 관측 불가. Binance diff 이벤트는 가격 거리 무제한 + **절대 잔량** 운반이므로 full book 없이 레벨 단위 추적 가능(자가치유, 드리프트 버그 클래스 비해당). 신규 접속 4분 청취로 61000 레벨 1,364.86 BTC 실포착(Coinglass 표시값과 일치), 부하 초당 ~10 이벤트. Coinglass/Bookmap도 동일 원천의 상시 청취 누적임을 확인 → 외부 API 구독 대안 기각 |
 | 2026-07-11 | **D1 소스 = 벽 레지스트리 전용 + 2단 임계치**: 기록 하한 `record_min_qty_btc` = 100 BTC, D1/D5 인텐트 기준 `size_threshold_btc` = 1000 BTC (기존 300에서 변경, 둘 다 설정값) | top-20 창은 ±$0.2~5(실측)라 벽이 창에 들어온 시점 = 가격 접촉 시점 → top-20 기반 D1 출현 감지는 성립 불가(사용자 지적, 65k의 102 BTC ask도 top-20 밖). top-20은 D3/D4 정밀 계측 + best price 전용으로 축소. 1000 근거(사용자 시장 판단): Binance 현물에서 가격 전달력 있는 유동성은 1k BTC급부터 — 실측상 현재 해당 벽이 61k 하나뿐인 것은 의도된 결과. 기록 하한 100 근거: 65k 102 BTC급 근접 물량 포착(150이면 누락) + M6 임계치 튜닝용 분포 데이터 확보. 세션 중 검토했던 "근접용/원거리용 별도 임계치" 안은 D1 근접 소스 자체가 폐기되어 철회 |
+| 2026-07-11 | **시계 정책 확정 (PRD §11.1 v1.2)**: 크로스 스트림 시간 비교·지속시간 타이머·staleness는 `local_monotonic_receive_time`, `exchange_time`(aggTrade `T`/diff `E`)은 단일 스트림 시간창과 표기 전용. "판정에 거래소 시각만" 원칙은 폐기 | spot partial depth에 거래소 시각 부재(M1 스파이크 실측)로 원칙 자체가 성립 불가 + D4 refill 근접성 등 크로스 스트림 비교는 aggTrade↔depth라 단일 시계 필수. monotonic은 세 스트림 공통 존재 + 시스템 시계 점프 면역 |
 | 2026-07-11 | 벽 레지스트리 SQLite 영속화 + unconfirmed 플래그 + TTL 14일 — "인메모리 상태 미복원" 원칙(PRD §12)의 유일한 예외 | 원거리 벽 시야는 청취 누적으로만 형성되므로 재시작 초기화 비용이 큼. 신뢰도 하락은 **청취 공백**(재시작·재연결 갭)에서만 발생(연결 중 무이벤트 = 무변화 = 값 유효) → 공백 시 전체 unconfirmed 마킹, 가격별 새 이벤트(절대 잔량)로 자동 해제, 능동 재검증 API는 부재. unconfirmed 중 APPEARED 발화 억제 + `first_seen_at` 보존(스푸핑 필터 타이머 유지). TTL 14일(설정값, 사용자 경험상 2주 초과 지속 벽 드묾)은 신뢰도가 아닌 저장 위생 규칙 — `events` 이력은 보존해 M6 튜닝 데이터 유지 |
 
 ## 오픈 퀘스천 트래킹 (PRD §15)

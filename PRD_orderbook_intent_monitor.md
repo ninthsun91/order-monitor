@@ -7,7 +7,7 @@
 | 상태 | Draft |
 | 대상 | 단일 개발자(운영자 겸), Claude Code 기반 개발 |
 
-> **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5). (4) D5 진행률 알림 추가 — 실현률이 `progress_step_pct`(20%) 경계를 넘을 때마다 중간 알림 (§8 D5, §9). 구현은 M4 코어 전이 검증 후. (5) TTL 청소를 `unconfirmed` 항목 전용으로 제한 — "무이벤트=유효" 원칙과의 모순 해소, 기산점은 `unconfirmed_since`, 기본 7일로 단축 (§12.1). (6) 스트림 헬스/세션 epoch 모델 도입 — 세 스트림 개별 감시, 하나라도 비정상이면 전 디텍터 판정 보류·활성 intent `INTERRUPTED`, diff `U`/`u`는 누락 탐지 전용, 워치독 staleness 스트림별 분리 (§5.1, §5.3, §5.4 신설, §11.1, §12). (7) D3 관통 판정 기준가 수정 — bid 벽의 관통을 best ask가 아닌 같은 side 신호(aggressor 체결가 주 신호 + best_bid 지속 보조 신호)로, 접촉 episode 단위로 판정 (§8 D3). (8) D4 산식을 경로 누적으로 교체 — peak/current 비교는 이벤트 경로를 잃어 무관한 신규 주문을 숨은 물량으로 오산, 체결 근접(`refill_window_ms`) 리필만 인정하고 `ICEBERG_MIN_TRADES`는 aggTrade 메시지 수 기준임을 명시 (§8 D4). (9) D5 상태기계 완결 — 등록 크기 S 정의(APPEARED 발화 시점 current_size 고정), FILLED 귀속 부분 체결 소멸에 `PARTIALLY_EXECUTED` 신설(WITHDRAWN은 PULLED 전용으로 분리), 평가 트리거·동시 발생 우선순위 명시, `INTERRUPTED`를 종국 상태 목록에 편입 (§8 D5, §9.1). (10) 알림 억제 범위 분리 + 핵심 알림 outbox — 가격 버킷 쿨다운은 D1/D2 전용, D5 종국 알림은 `(intent_id, terminal_state)` 멱등 키에 쿨다운 미적용, SQLite `alerts_outbox` 선기록으로 재시작 유실 방지 (§9.2, §9.4 신설, §12).
+> **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5). (4) D5 진행률 알림 추가 — 실현률이 `progress_step_pct`(20%) 경계를 넘을 때마다 중간 알림 (§8 D5, §9). 구현은 M4 코어 전이 검증 후. (5) TTL 청소를 `unconfirmed` 항목 전용으로 제한 — "무이벤트=유효" 원칙과의 모순 해소, 기산점은 `unconfirmed_since`, 기본 7일로 단축 (§12.1). (6) 스트림 헬스/세션 epoch 모델 도입 — 세 스트림 개별 감시, 하나라도 비정상이면 전 디텍터 판정 보류·활성 intent `INTERRUPTED`, diff `U`/`u`는 누락 탐지 전용, 워치독 staleness 스트림별 분리 (§5.1, §5.3, §5.4 신설, §11.1, §12). (7) D3 관통 판정 기준가 수정 — bid 벽의 관통을 best ask가 아닌 같은 side 신호(aggressor 체결가 주 신호 + best_bid 지속 보조 신호)로, 접촉 episode 단위로 판정 (§8 D3). (8) D4 산식을 경로 누적으로 교체 — peak/current 비교는 이벤트 경로를 잃어 무관한 신규 주문을 숨은 물량으로 오산, 체결 근접(`refill_window_ms`) 리필만 인정하고 `ICEBERG_MIN_TRADES`는 aggTrade 메시지 수 기준임을 명시 (§8 D4). (9) D5 상태기계 완결 — 등록 크기 S 정의(APPEARED 발화 시점 current_size 고정), FILLED 귀속 부분 체결 소멸에 `PARTIALLY_EXECUTED` 신설(WITHDRAWN은 PULLED 전용으로 분리), 평가 트리거·동시 발생 우선순위 명시, `INTERRUPTED`를 종국 상태 목록에 편입 (§8 D5, §9.1). (10) 알림 억제 범위 분리 + 핵심 알림 outbox — 가격 버킷 쿨다운은 D1/D2 전용, D5 종국 알림은 `(intent_id, terminal_state)` 멱등 키에 쿨다운 미적용, SQLite `alerts_outbox` 선기록으로 재시작 유실 방지 (§9.2, §9.4 신설, §12). (11) 명세 보강 — 시계 정책 상세화(`exchange_time`/`local_monotonic_receive_time` 용도 분리, depth의 거래소 시각 부재 해소, §11.1), 수치 표현형 Decimal 고정(§7), config 불변조건 검증(§10), 결정적 replay 테스트·오탐 지표를 완료 기준에 편입(§13).
 >
 > **v1.1 개정 (2026-07-11)**: M1 스파이크 실측 결과 top-20 창의 실제 폭이 현재가 ±$0.2~5 수준으로, "현재가 근처 20레벨로 충분" 가정이 본 시스템의 실제 목적(원거리 고래 벽 감시, 예: 61k의 1.3k BTC bid)과 어긋남이 확인됨. diff 스트림을 **full book 재구성 없이 "대형 레벨 이벤트 탭"으로만** 병행 사용하는 벽 레지스트리(wall registry)를 도입 (§5.1, §6, §7, §8, §10, §12 개정).
 
@@ -150,6 +150,8 @@ diff 스트림으로 full book을 유지하려면 REST 스냅샷 + U/u 시퀀스
 | `wall_registry` (v1.1) | 기록 하한(`wall_tracker.record_min_qty_btc`) 이상 대형 레벨: `{price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since}` | **(v1.2)** 신규 가격은 `record_min_qty_btc` 이상일 때만 등록. 이미 추적 중인 가격은 **잔량 값과 무관하게 모든 diff 이벤트로 덮어쓰기**. 잔량 0(명시적 tombstone) 또는 기록 하한 미만 하락 시 소멸 판정(§8 D1 REMOVED) 후 활성 레지스트리에서 제거 |
 
 메모리 상한: `trade_window`와 `intents`는 시간/개수 상한으로 바운드. 재시작 시 상태는 초기화되며(§12 참고), 이는 수용 가능한 트레이드오프다. **예외(v1.1)**: `wall_registry`는 SQLite에 동기화되어 재시작 시 복원된다 — 원거리 벽은 재관측에 시간이 걸려(청취 누적 방식) 초기화 비용이 크기 때문. 복원 직후 처리는 §12 참고.
+
+**수치 표현형 (v1.2)**: 가격·수량은 수신 메시지의 문자열을 `Decimal`로 파싱해 사용하고, 레벨 딕셔너리 키는 정규화된 `Decimal`이다 — 세 스트림의 가격 키를 안정적으로 조인하고 누적 연산 오차를 배제하기 위해 **판정 경로에서 float를 금지**한다 (틱/스텝 정수화는 성능 필요 시의 선택적 최적화로 유보). config의 수치 임계치는 로드 시점에 `Decimal`로 변환해 비교한다.
 
 ## 8. 디텍터 명세
 
@@ -393,6 +395,13 @@ watchdog:
 
 모든 판정 파라미터는 재시작으로 반영되면 충분하다 (핫 리로드는 비목표).
 
+**불변조건 검증 (v1.2)**: 로더는 타입만이 아니라 값의 관계도 검증하며, 위반 시 기동을 거부한다:
+
+- 모든 수치 파라미터 > 0
+- 비율류(`exit_ratio`, `fill_attribution`, `absorption_min_pct`, `realize_pct`, `realize_pct_above`, `progress_step_pct`): 0 < x ≤ 1
+- `wall_tracker.record_min_qty_btc < thresholds.size_threshold_btc` (2단 임계치 순서)
+- `watchdog.heartbeat_interval < watchdog.stale_seconds`
+
 ## 11. 비기능 요구사항
 
 ### 11.1 신뢰성 (최우선)
@@ -401,7 +410,10 @@ watchdog:
 - **워치독 (v1.2 — 스트림별 감시)**: depth·diff는 `stale_seconds`(30 — 둘 다 100ms 주기라 공용 임계), aggTrade는 `trade_stale_seconds`(60 — 체결 발생 시에만 push라 별도의 느슨한 임계) 동안 수신이 없으면 **해당 스트림명을 명시한** `FEED_STALE`을 Telegram으로 발송하고 epoch를 종료한다(§5.4). 프로세스 하트비트 파일/타임스탬프를 별도 경량 워치독(cron 또는 systemd timer)이 감시하여, 메인 프로세스가 행 상태여도 감지
 - **재연결**: 지수 백오프(1s→최대 60s), 판정 재개는 §5.4 epoch 규칙(세 스트림 구독 확인 + 첫 depth 스냅샷)을 따름
 - **부분 실패 격리**: Telegram 발송 실패가 파이프라인을 막지 않도록 발송은 비동기 큐로 분리
-- **시계**: 판정에는 거래소 이벤트 타임스탬프 사용, 로컬 시계는 워치독에만 사용
+- **시계 (v1.2 상세화)**: 두 시각을 용도별로 분리한다. spot partial depth(`@depth20`)에는 거래소 시각이 없으므로(M1 스파이크 실측) "판정에 거래소 시각만"은 성립 불가.
+  - `exchange_time` (aggTrade `T`, diff `E` — depth20에는 **부재**): **단일 스트림 내** 시간창(D2 trade_window 만료)과 기록·알림 표기 전용
+  - `local_monotonic_receive_time` (모든 이벤트에 수신 시 스탬프): **크로스 스트림 시간 비교 전부**(D4 refill 근접성 = aggTrade↔depth 비교, D3 접촉 episode 경계, 등록→확정 소요시간) + 지속시간 타이머(`PERSIST_SECONDS`, `INTENT_TTL`, 쿨다운) + 워치독 staleness — 세 스트림에 공통으로 존재하는 유일한 시계이며, 단조 시계라 시스템 시계 점프에 면역
+  - 이벤트 레코드에는 두 값을 모두 저장한다 (`exchange_time`은 있는 스트림만)
 
 ### 11.2 성능 (충분 조건만)
 
@@ -443,12 +455,16 @@ watchdog:
 |---|---|---|
 | M1 | Ingestion + 상태 모델 + 로그 | 24h 무중단 수집, 재연결 자동 복구 확인 |
 | M2 | D1 + D2 + Telegram 발송 + 쿨다운 | 실제 알림 수신, 스푸핑 필터 동작 확인 |
-| M3 | 레벨별 체결 집계 + D3 + D4 | FILLED/PULLED 구분 정확성 육안 검증 (Bookmap 대조) |
-| M4 | D5 상태기계 + 확정 알림 | 케이스 1/2 알림 각 1건 이상 실전 확인 |
+| M3 | 레벨별 체결 집계 + D3 + D4 | 결정적 replay 테스트 통과 + FILLED/PULLED 구분 육안 검증 (Bookmap 대조) |
+| M4 | D5 상태기계 + 확정 알림 | 결정적 replay 테스트 통과 + 케이스 1/2 알림 각 1건 이상 실전 확인 |
 | M5 | Watchdog + systemd + 배포 | VPS에서 7일 무인 운영, 조용한 실패 0건 |
-| M6 | SQLite 영속화 + 임계치 튜닝 루프 | 1주 데이터 기반 임계치 1차 확정 |
+| M6 | SQLite 영속화 + 임계치 튜닝 루프 | 1주 데이터 기반 임계치 1차 확정 + 오탐 지표 달성 |
 
 각 단계는 독립 배포 가능. M2 시점부터 실사용 가치 발생.
+
+**결정적 replay 테스트 (v1.2)**: 합성 + 실캡처 이벤트 시퀀스를 재생하는 테스트 픽스처로, 정상 경로만이 아니라 **재연결(epoch 종료/재개), 스트림 순서 역전, 이벤트 누락(diff U/u 갭 포함)** 케이스를 반드시 포함한다. Bookmap 육안 대조 N건과 실전 알림 각 1건은 표본이 작아 경계 경로를 커버하지 못하므로, 이것이 M3/M4 정확성 검증의 주 수단이다. §12의 "리플레이 백테스트(v2)"와는 다른 것 — 이것은 임계치 튜닝용 재생이 아니라 판정 로직의 결정성 검증용 테스트다.
+
+**오탐 지표 (v1.2, M6에서 확정)**: 초기 목표값 — D5 종국 알림 오탐(사후 리뷰로 판정) **주 1건 이하, 목표 0**; D1/D2 알림 **시간당 평균 3건 이하** (스팸 상한). M6 튜닝 루프에서 실데이터로 재조정하며, 이 지표 달성이 M6 완료 기준의 일부다.
 
 ## 14. 리스크 및 완화
 
