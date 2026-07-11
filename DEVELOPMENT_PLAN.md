@@ -120,9 +120,9 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 - [ ] `cum_traded_at_level` 집계: aggTrade를 가격·aggressor 방향으로 레벨에 귀속
 - [ ] D3 흡수: 접촉 episode 단위 판정 — 가격 도달 + `ABSORPTION_MIN` + 비관통. 관통은 같은 side 기준 (v1.2): aggressor 체결가 주 신호 + best 지속(`PIERCE_PERSIST_SNAPSHOTS`) 보조 신호, 실현률 산출 (PRD §8 D3)
-- [ ] D4 아이스버그: 초과 체결 마진 + `ICEBERG_MIN_TRADES` (PRD §8 D4)
+- [ ] D4 아이스버그 (v1.2 경로 누적): episode 내 체결 근접(`REFILL_WINDOW_MS`) 양의 델타만 `refill_added`로 인정, `ICEBERG_MARGIN`(최소 리필량) + 체결→회복 쌍 ≥ `ICEBERG_MIN_TRADES`(aggTrade 메시지 수 기준) (PRD §8 D4)
 - [ ] D3/D4는 알림 발송 없이 로그(및 DB)만 기록 (PRD §9.1)
-- [ ] 단위 테스트: 합성 이벤트 시퀀스로 D3/D4 발화 조건 검증 — 관통 케이스 포함 (체결가 관통 / best 지속 관통 / 아이스버그 플리커는 비관통, PRD §8 D3 v1.2)
+- [ ] 단위 테스트: 합성 이벤트 시퀀스로 D3/D4 발화 조건 검증 — 관통 케이스 포함 (체결가 관통 / best 지속 관통 / 아이스버그 플리커는 비관통, PRD §8 D3 v1.2) + D4 경로 케이스 (체결 직후 회복 = 발화 / 체결 후 시간 지난 무관한 추가 = 비발화, PRD §8 D4 v1.2)
 - [ ] Bookmap 육안 대조 절차 확정 (PRD 오픈 퀘스천 #5: 스크린샷 vs 녹화) → 결정 기록
 
 **완료 기준 (PRD)**: FILLED/PULLED 구분 정확성 육안 검증 (Bookmap 대조).

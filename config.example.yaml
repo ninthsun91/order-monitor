@@ -12,8 +12,9 @@ thresholds:
   burst_cooldown_seconds: 120
   absorption_min_pct: 0.3        # D3
   pierce_persist_snapshots: 2    # D3 관통 보조 신호 지속성 (PRD §8 D3 v1.2)
-  iceberg_margin_btc: 20         # D4
-  iceberg_min_trades: 5
+  iceberg_margin_btc: 20         # D4 최소 인정 리필량 (PRD §8 D4 v1.2)
+  iceberg_min_trades: 5          # aggTrade 메시지 수 기준
+  refill_window_ms: 500          # D4 체결→회복 시간 근접성 창
   realize_pct: 0.6               # D5
   realize_pct_above: 0.6
   intent_ttl_seconds: 1800

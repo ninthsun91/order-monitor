@@ -24,6 +24,7 @@ class ThresholdsConfig:
     pierce_persist_snapshots: int
     iceberg_margin_btc: float
     iceberg_min_trades: int
+    refill_window_ms: int
     realize_pct: float
     realize_pct_above: float
     intent_ttl_seconds: float
