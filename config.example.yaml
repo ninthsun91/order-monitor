@@ -1,0 +1,31 @@
+exchange: binance
+symbol: BTC/USDT
+depth_stream: depth20@100ms
+
+thresholds:
+  size_threshold_btc: 300        # D1 대형 잔량 기준
+  persist_seconds: 3             # D1 스푸핑 필터
+  exit_ratio: 0.5
+  fill_attribution: 0.7
+  vol_threshold_btc: 100         # D2
+  window_seconds: 60             # D2
+  burst_cooldown_seconds: 120
+  absorption_min_pct: 0.3        # D3
+  iceberg_margin_btc: 20         # D4
+  iceberg_min_trades: 5
+  realize_pct: 0.6               # D5
+  realize_pct_above: 0.6
+  intent_ttl_seconds: 1800
+
+alerts:
+  send_d1: false
+  send_d2: true
+  bucket_size_usdt: 50
+  cooldown_seconds: 300
+
+telegram:
+  chat_id: "..."                 # 토큰은 TELEGRAM_BOT_TOKEN env로
+
+watchdog:
+  stale_seconds: 30              # 이 시간 동안 depth 이벤트 없으면 FEED_STALE
+  heartbeat_interval: 10
