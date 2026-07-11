@@ -87,9 +87,9 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [ ] WS 클라이언트: `btcusdt@depth20@100ms` 구독 → `order_book` 상태 갱신 (통째 교체)
 - [ ] WS 클라이언트: `btcusdt@aggTrade` 구독 → `trade_window` deque 적재 + 만료 pop
 - [ ] **(v1.1)** WS 클라이언트: `btcusdt@depth@100ms`(diff) 구독 → **벽 레지스트리 이벤트 탭** (PRD §5.1 설계 결정 2). full book 미유지 — 신규 가격은 `wall_tracker.record_min_qty_btc`(100) 이상일 때만 등록, **추적 중인 가격은 잔량 값 불문 모든 이벤트 처리 (v1.2 유령 벽 방지 — PRD §8 D1 소멸 규칙)**: 잔량 0 = tombstone 소멸, 하한 미만 하락 시 D1 소멸 판정 후 활성 제거. D1 발화 게이트는 `size_threshold_btc`(1000) — 2단 임계치 (PRD §8 D1)
-- [ ] **(v1.1)** `wall_registry` SQLite 영속화 선행 구현 (PRD §12.1 — `walls` 테이블 한정, 전체 영속화는 여전히 M6): 재시작 복원, 청취 공백 시 전체 `unconfirmed` 마킹(`unconfirmed_since` 기록) + 가격별 첫 이벤트로 해제, `first_seen_at` 보존, `ttl_days` 청소는 **unconfirmed 전용** (`unconfirmed_since` 기준 7일, 확인된 벽은 무기한 — PRD §12.1 v1.2)
+- [ ] **(v1.1)** `wall_registry` SQLite 영속화 선행 구현 (PRD §12.1 — `walls` 테이블 한정, 전체 영속화는 여전히 M6): 재시작 복원, 청취 공백 시 전체 `unconfirmed` 마킹(`unconfirmed_since` 기록) + 가격별 첫 이벤트로 해제, `first_seen_above_threshold`(스푸핑 타이머 기준)·`first_seen_at`(관측용) 보존 (PRD §12.1 v1.2 정정 반영), `ttl_days` 청소는 **unconfirmed 전용** (`unconfirmed_since` 기준 7일, 확인된 벽은 무기한 — PRD §12.1 v1.2)
 - [ ] `level_tracker` 구현: top-20 크기 + 체결 귀속 `{price, side, current_size, cum_traded_at_level}` (PRD §7 v1.2 축소 — 생애주기 필드는 wall_registry로 일원화)
-- [ ] 재연결: 지수 백오프(1s→60s), 24h 강제 단절·ping/pong은 라이브러리 위임 확인 (PRD §5.3)
+- [ ] 재연결: 지수 백오프(1s→60s), 24h 강제 단절·ping/pong은 라이브러리 위임 또는 자체 구현으로 흡수 확인 (PRD §5.3 — §5.2 클라이언트 택일에 따름)
 - [ ] **(v1.2)** 스트림별 헬스 추적(최종 수신 시각) + 세션 epoch: 하나라도 단절·스테일·diff U/u 갭이면 전 디텍터 판정 보류(상태 적재는 계속), 세 스트림 구독 확인 + 첫 depth 스냅샷 후 새 epoch (PRD §5.4)
 - [ ] **(v1.2)** diff `U`/`u` 연속성 검사 — 누락 탐지 전용(재구성 금지 유지), 갭 시 청취 공백 취급(레지스트리 전체 unconfirmed) (PRD §5.1)
 - [ ] 이벤트 타임스탬프 **(v1.2 결정 — PRD §11.1)**: 전 이벤트에 `local_monotonic_receive_time` 스탬프, 있으면 `exchange_time`(aggTrade `T`, diff `E` — depth20에는 부재, 스파이크 실측) 병기 저장. 크로스 스트림 비교(D4 refill 근접성 등)·지속시간 타이머·staleness = monotonic, 단일 스트림 시간창(D2)·표기 = exchange
@@ -104,7 +104,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 ## M2 — D1 + D2 + Telegram 발송
 
-- [ ] D1 APPEARED: `SIZE_THRESHOLD` + `PERSIST_SECONDS` 지속 필터 + 레벨당 1회 발화 (PRD §8 D1)
+- [ ] D1 APPEARED: `SIZE_THRESHOLD` + `PERSIST_SECONDS` 지속 필터 + 레벨당 1회 발화 + `unconfirmed` 레벨 발화 억제 (PRD §8 D1, §12.1 규칙 2)
 - [ ] D1 REMOVED: `EXIT_RATIO` 하락 시 `FILLED` / `PULLED` 판정 (`FILL_ATTRIBUTION`)
 - [ ] D2 볼륨 버스트: 방향 분리 집계, `BURST_COOLDOWN` (PRD §8 D2 — 합산 모드는 v1.2 검수(13)에서 삭제)
 - [ ] Telegram 발송기: 비동기 큐, 초당 상한, 실패 시 백오프 재시도 (PRD §9.2, §11.1)
@@ -178,7 +178,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [ ] SQLite 스키마: `events`, `intents`, `trades_sample`(선택) (PRD §12 — `walls`는 M1, `alerts_outbox`는 M4 선행)
 - [ ] 모든 디텍터 이벤트/상태 전이 기록
 - [ ] 재시작 시 진행 중 intent를 DB에 `INTERRUPTED` 마킹
-- [ ] 1주 데이터로 top-20 잔량 분포 분석 → `SIZE_THRESHOLD` 확정 (오픈 퀘스천 #1)
+- [ ] 1주 벽 레지스트리 기록(`record_min_qty_btc` 이상) 분포 분석 → `SIZE_THRESHOLD`·`record_min_qty_btc` 재검토 (OQ #1 확정값 1000의 실데이터 검증 — v1.1 이후 D1 소스는 top-20이 아닌 벽 레지스트리)
 - [ ] 나머지 임계치 1차 튜닝 (오탐/침묵 리뷰)
 - [ ] **(v1.2)** 오탐 지표 달성 확인: D5 오탐 주 1건 이하(목표 0), D1/D2 시간당 평균 3건 이하 — 초기 제안값, 실데이터로 재조정 후 확정 (PRD §13)
 - [ ] 확정 임계치를 `config.yaml`에 반영하고 결정 기록에 근거 기재
@@ -203,7 +203,7 @@ PRD와 다르게 결정했거나 PRD가 열어둔 것을 확정한 사항. 날�
 | 2026-07-11 | **PRD v1.1 개정: diff 스트림을 "대형 레벨 이벤트 탭"으로 도입, 벽 레지스트리 신설** (§5.1 한계 조항 번복) | 사용자 확인: 프로젝트의 실제 목적은 원거리 고래 벽(예: 61k의 1.36k BTC bid, Coinglass/Bookmap에서 관측) 감시. 실측: top-20 창은 현재가 ±$0.2~5, REST depth(limit 상한 5000)도 ±$970 한계 → partial/REST로는 원천 관측 불가. Binance diff 이벤트는 가격 거리 무제한 + **절대 잔량** 운반이므로 full book 없이 레벨 단위 추적 가능(자가치유, 드리프트 버그 클래스 비해당). 신규 접속 4분 청취로 61000 레벨 1,364.86 BTC 실포착(Coinglass 표시값과 일치), 부하 초당 ~10 이벤트. Coinglass/Bookmap도 동일 원천의 상시 청취 누적임을 확인 → 외부 API 구독 대안 기각 |
 | 2026-07-11 | **D1 소스 = 벽 레지스트리 전용 + 2단 임계치**: 기록 하한 `record_min_qty_btc` = 100 BTC, D1/D5 인텐트 기준 `size_threshold_btc` = 1000 BTC (기존 300에서 변경, 둘 다 설정값) | top-20 창은 ±$0.2~5(실측)라 벽이 창에 들어온 시점 = 가격 접촉 시점 → top-20 기반 D1 출현 감지는 성립 불가(사용자 지적, 65k의 102 BTC ask도 top-20 밖). top-20은 D3/D4 정밀 계측 + best price 전용으로 축소. 1000 근거(사용자 시장 판단): Binance 현물에서 가격 전달력 있는 유동성은 1k BTC급부터 — 실측상 현재 해당 벽이 61k 하나뿐인 것은 의도된 결과. 기록 하한 100 근거: 65k 102 BTC급 근접 물량 포착(150이면 누락) + M6 임계치 튜닝용 분포 데이터 확보. 세션 중 검토했던 "근접용/원거리용 별도 임계치" 안은 D1 근접 소스 자체가 폐기되어 철회 |
 | 2026-07-11 | **시계 정책 확정 (PRD §11.1 v1.2)**: 크로스 스트림 시간 비교·지속시간 타이머·staleness는 `local_monotonic_receive_time`, `exchange_time`(aggTrade `T`/diff `E`)은 단일 스트림 시간창과 표기 전용. "판정에 거래소 시각만" 원칙은 폐기 | spot partial depth에 거래소 시각 부재(M1 스파이크 실측)로 원칙 자체가 성립 불가 + D4 refill 근접성 등 크로스 스트림 비교는 aggTrade↔depth라 단일 시계 필수. monotonic은 세 스트림 공통 존재 + 시스템 시계 점프 면역 |
-| 2026-07-11 | 벽 레지스트리 SQLite 영속화 + unconfirmed 플래그 + TTL 14일 — "인메모리 상태 미복원" 원칙(PRD §12)의 유일한 예외 | 원거리 벽 시야는 청취 누적으로만 형성되므로 재시작 초기화 비용이 큼. 신뢰도 하락은 **청취 공백**(재시작·재연결 갭)에서만 발생(연결 중 무이벤트 = 무변화 = 값 유효) → 공백 시 전체 unconfirmed 마킹, 가격별 새 이벤트(절대 잔량)로 자동 해제, 능동 재검증 API는 부재. unconfirmed 중 APPEARED 발화 억제 + `first_seen_at` 보존(스푸핑 필터 타이머 유지). TTL 14일(설정값, 사용자 경험상 2주 초과 지속 벽 드묾)은 신뢰도가 아닌 저장 위생 규칙 — `events` 이력은 보존해 M6 튜닝 데이터 유지 |
+| 2026-07-11 | 벽 레지스트리 SQLite 영속화 + unconfirmed 플래그 + TTL 14일 — "인메모리 상태 미복원" 원칙(PRD §12)의 유일한 예외 | 원거리 벽 시야는 청취 누적으로만 형성되므로 재시작 초기화 비용이 큼. 신뢰도 하락은 **청취 공백**(재시작·재연결 갭)에서만 발생(연결 중 무이벤트 = 무변화 = 값 유효) → 공백 시 전체 unconfirmed 마킹, 가격별 새 이벤트(절대 잔량)로 자동 해제, 능동 재검증 API는 부재. unconfirmed 중 APPEARED 발화 억제 + `first_seen_at` 보존(스푸핑 필터 타이머 유지). TTL 14일(설정값, 사용자 경험상 2주 초과 지속 벽 드묾)은 신뢰도가 아닌 저장 위생 규칙 — `events` 이력은 보존해 M6 튜닝 데이터 유지. **(주)** 이후 PRD v1.2 (5)에서 TTL은 unconfirmed 전용·기산점 `unconfirmed_since`·기본 7일로 개정됨 |
 
 ## 오픈 퀘스천 트래킹 (PRD §15)
 
