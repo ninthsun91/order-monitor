@@ -7,7 +7,7 @@
 | 상태 | Draft |
 | 대상 | 단일 개발자(운영자 겸), Claude Code 기반 개발 |
 
-> **v1.2 개정 (2026-07-11)**: 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분.
+> **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5).
 >
 > **v1.1 개정 (2026-07-11)**: M1 스파이크 실측 결과 top-20 창의 실제 폭이 현재가 ±$0.2~5 수준으로, "현재가 근처 20레벨로 충분" 가정이 본 시스템의 실제 목적(원거리 고래 벽 감시, 예: 61k의 1.3k BTC bid)과 어긋남이 확인됨. diff 스트림을 **full book 재구성 없이 "대형 레벨 이벤트 탭"으로만** 병행 사용하는 벽 레지스트리(wall registry)를 도입 (§5.1, §6, §7, §8, §10, §12 개정).
 
@@ -135,7 +135,7 @@ diff 스트림으로 full book을 유지하려면 REST 스냅샷 + U/u 시퀀스
 | `level_tracker` | 레벨별 생애주기: `{price, side, current_size, peak_size, first_seen_above_threshold, active, cum_traded_at_level}` | depth 이벤트(크기), aggTrade(체결 누적) |
 | `trade_window` | 최근 `WINDOW_SECONDS` 체결 deque: `(ts, price, qty, aggressor_side)` | aggTrade push, 만료분 pop |
 | `intents` | D5 상태기계 인스턴스 목록 (아래 §9) | 디텍터 이벤트 |
-| `wall_registry` (v1.1) | 기록 하한(`wall_tracker.record_min_qty_btc`) 이상 대형 레벨: `{price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed}` | diff 탭 이벤트마다 절대 잔량으로 덮어쓰기. 잔량 0 이벤트 → 소멸 처리(FILLED/PULLED 귀속은 aggTrade 대조) |
+| `wall_registry` (v1.1) | 기록 하한(`wall_tracker.record_min_qty_btc`) 이상 대형 레벨: `{price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed}` | **(v1.2)** 신규 가격은 `record_min_qty_btc` 이상일 때만 등록. 이미 추적 중인 가격은 **잔량 값과 무관하게 모든 diff 이벤트로 덮어쓰기**. 잔량 0(명시적 tombstone) 또는 기록 하한 미만 하락 시 소멸 판정(§8 D1 REMOVED) 후 활성 레지스트리에서 제거 |
 
 메모리 상한: `trade_window`와 `intents`는 시간/개수 상한으로 바운드. 재시작 시 상태는 초기화되며(§12 참고), 이는 수용 가능한 트레이드오프다. **예외(v1.1)**: `wall_registry`는 SQLite에 동기화되어 재시작 시 복원된다 — 원거리 벽은 재관측에 시간이 걸려(청취 누적 방식) 초기화 비용이 크기 때문. 복원 직후 처리는 §12 참고.
 
@@ -159,6 +159,8 @@ diff 스트림으로 full book을 유지하려면 REST 스냅샷 + U/u 시퀀스
 **제거(REMOVED) 조건** — 활성 레벨의 `current_size < SIZE_THRESHOLD × EXIT_RATIO`(0.5)로 하락 시, 감소 원인을 판정하여 발화:
 - `cum_traded_at_level ≥ (peak_size − current_size) × FILL_ATTRIBUTION`(0.7) → **`FILLED`** (실체결로 소진)
 - 그 외 → **`PULLED`** (취소/스푸핑 추정)
+
+**레지스트리 소멸 규칙 (v1.2)**: `record_min_qty_btc`는 **신규 가격의 등록 게이트일 뿐**, 이미 추적 중인 가격의 diff 이벤트는 잔량 값과 무관하게 항상 처리한다. 잔량 0은 명시적 tombstone으로 소멸 처리하고, `0 < 잔량 < record_min_qty_btc`로 하락한 경우에도 동일하게 — D1 활성 레벨이었다면 REMOVED 판정(FILLED/PULLED)을 먼저 수행한 뒤 — 활성 레지스트리에서 제거한다. 이 규칙이 없으면 1,200 → 50 BTC 감소 이벤트가 "하한 미만·0 아님"으로 무시되어 유령 벽(1,200)이 잔존하고, `current_size`가 갱신되지 않아 REMOVED 판정 자체도 발화하지 못한다.
 
 **평가 시점**: diff 탭 이벤트 도착마다 갱신(주기 불규칙 — 해당 가격에 변경이 있을 때만), 발화는 지속시간 타이머로 게이트.
 
@@ -225,6 +227,14 @@ EXECUTION_CONFIRMED  INTENT_WITHDRAWN   EXECUTION_INFERRED_ABOVE
 **판정 의미 (v1.2 명시)**: 공개 스트림에는 주문 소유자·maker 주문 ID가 없고 aggTrade도 단일 taker 주문 기준 집계일 뿐이므로, 특정 주체로의 체결 귀속은 데이터상 불가능하다.
 - **케이스 1의 "확정"** = "해당 가격 레벨에서 임계 이상의 체결이 실제 발생함"의 확인이다. 같은 가격에 복수 주문이 공존할 수 있고 큐 위치도 알 수 없으므로, 원래 표시된 대형 주문 자체가 체결되었다는 확인은 아니다.
 - **케이스 2**는 여기에 상위 가격대 체결의 귀속 불확실성이 더해지므로 "확정"이 아닌 **추정(inferred)**으로 명명한다 (`EXECUTION_INFERRED_ABOVE`). 알림은 기본 발송하되 케이스 1과 구분되는 추정 등급으로 표기한다 (§9).
+
+**소멸 시 종국 평가 (v1.2)**: 등록된 인텐트의 레벨이 소멸하면(D1 REMOVED, tombstone, 기록 하한 미만 하락 — §8 D1 소멸 규칙) TTL이나 다음 이벤트를 기다리지 않고 **즉시** 종국 상태를 평가한다. 소멸 원인은 세 가지로 구별한다:
+
+1. **가격 도달 + 레벨 체결 누적 충족** → `EXECUTION_CONFIRMED` (케이스 1, 그 자리에서 흡수)
+2. **가격 미도달 + 상위 구간 케이스 2 누적 충족** → `EXECUTION_INFERRED_ABOVE` — PULLED 판정 시 이 조건을 **먼저** 평가하며, 충족 시 `INTENT_WITHDRAWN`보다 우선한다
+3. **둘 다 미충족** → `INTENT_WITHDRAWN` (무체결 소멸, 로그만) — 단 로그/DB 레코드에 레벨 실현률과 상위 구간 추정 실현률을 함께 남겨, 임계 미달 부분 흡수와 완전 무체결 소멸을 사후 구분 가능하게 한다
+
+이로써 흡수(케이스 1/2)에 의한 소멸은 벽 소멸 알림(D1 REMOVED, 기본 off)과 별개로 D5 확정/추정 알림이 **보장**되어, "흡수에 의한 소멸"임을 알 수 있다.
 
 ## 9. 알림 (Telegram)
 

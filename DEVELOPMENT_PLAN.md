@@ -83,7 +83,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - [x] **스파이크(우선 작업)**: ccxt `watch_order_book`이 `btcusdt@depth20@100ms`(partial snapshot)를 diff 스트림이 아니라 정확히 그 스트림으로 구독하는지 검증. 실패 시 `binance-connector-python`으로 전환(콜백→asyncio 브릿지 직접 구현) 후 이어서 진행 → **실패 확정 (2026-07-11)**: ccxt는 `btcusdt@depth@100ms`(diff)로 SUBSCRIBE 프레임을 고정 생성하고 REST 스냅샷+델타 병합으로 로컬 full book을 유지함(실측: 전송 프레임 캡처 + 수신 `depthUpdate` 이벤트 확인, 소스에도 `todo add support for <levels>-snapshots` 주석 존재. `limit=20`은 반환 시 잘라주는 용도일 뿐). fallback인 `binance-connector-python 3.13.0`의 `partial_book_depth(symbol, level=20, speed=100)`은 정확히 목표 스트림 구독 실측 확인(3초간 29msg, 20레벨 스냅샷, 간격 중앙값 100ms) → 결정 기록 참고
 - [ ] WS 클라이언트: `btcusdt@depth20@100ms` 구독 → `order_book` 상태 갱신 (통째 교체)
 - [ ] WS 클라이언트: `btcusdt@aggTrade` 구독 → `trade_window` deque 적재 + 만료 pop
-- [ ] **(v1.1)** WS 클라이언트: `btcusdt@depth@100ms`(diff) 구독 → **벽 레지스트리 이벤트 탭** (PRD §5.1 설계 결정 2). full book 미유지 — `wall_tracker.record_min_qty_btc`(100) 이상 절대 잔량만 `wall_registry`에 덮어쓰기, 잔량 0 이벤트 시 소멸 처리. D1 발화 게이트는 `size_threshold_btc`(1000) — 2단 임계치 (PRD §8 D1)
+- [ ] **(v1.1)** WS 클라이언트: `btcusdt@depth@100ms`(diff) 구독 → **벽 레지스트리 이벤트 탭** (PRD §5.1 설계 결정 2). full book 미유지 — 신규 가격은 `wall_tracker.record_min_qty_btc`(100) 이상일 때만 등록, **추적 중인 가격은 잔량 값 불문 모든 이벤트 처리 (v1.2 유령 벽 방지 — PRD §8 D1 소멸 규칙)**: 잔량 0 = tombstone 소멸, 하한 미만 하락 시 D1 소멸 판정 후 활성 제거. D1 발화 게이트는 `size_threshold_btc`(1000) — 2단 임계치 (PRD §8 D1)
 - [ ] **(v1.1)** `wall_registry` SQLite 영속화 선행 구현 (PRD §12.1 — `walls` 테이블 한정, 전체 영속화는 여전히 M6): 재시작 복원, 청취 공백 시 전체 `unconfirmed` 마킹 + 가격별 첫 이벤트로 해제, `first_seen_at` 보존, `ttl_days` 청소
 - [ ] `level_tracker` 구현: 레벨 생애주기 필드 (PRD §7)
 - [ ] 재연결: 지수 백오프(1s→60s), 24h 강제 단절·ping/pong은 라이브러리 위임 확인 (PRD §5.3)
@@ -134,8 +134,9 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 - [ ] `INTENT_REGISTERED` 등록 (D1 APPEARED 입력, 크기 S 기록)
 - [ ] 전이 1: 가격 도달 + 체결 누적 ≥ S×`REALIZE_PCT` → `EXECUTION_CONFIRMED` (케이스 1 — "해당 레벨 체결" 확인이지 원 표시 주문의 체결 확인 아님, PRD §8 D5 판정 의미)
-- [ ] 전이 2: PULLED → `INTENT_WITHDRAWN` (로그만)
+- [ ] 전이 2: PULLED → 케이스 2 누적을 **먼저** 평가(충족 시 `EXECUTION_INFERRED_ABOVE` 우선), 미충족 시 `INTENT_WITHDRAWN` (로그만 — 레벨 실현률·상위 추정 실현률 필드 포함, PRD §8 D5 v1.2)
 - [ ] 전이 3: 상위 구간 D4 누적 ≥ S×`REALIZE_PCT_ABOVE` → `EXECUTION_INFERRED_ABOVE` (케이스 2, 리필 확인분만 합산 — PRD §8 D5 집계 방식. v1.2에서 `_CONFIRMED_ABOVE`에서 개명: 귀속 불가로 "추정" 등급)
+- [ ] 레벨 소멸(REMOVED/tombstone/하한 미달) 시 D5 즉시 종국 평가 — TTL 대기 없음, 소멸 원인 3분류 (PRD §8 D5 v1.2 "소멸 시 종국 평가")
 - [ ] `INTENT_TTL` 만료 → `INTENT_EXPIRED` (로그만)
 - [ ] `intents` 개수/시간 상한 (메모리 바운드)
 - [ ] 확정 알림 포맷: 실현률 %, 등록→확정 소요시간 포함 (PRD §9.3), 케이스 2는 "추정" 명시
