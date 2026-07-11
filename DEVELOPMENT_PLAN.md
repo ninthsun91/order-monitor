@@ -1,7 +1,9 @@
 # 개발 계획 및 진행 트래킹 — BTC 오더북 인텐트→실체결 모니터
 
 > 이 문서는 [PRD](PRD_orderbook_intent_monitor.md)의 구현 계획(§13)을 실제 작업 단위로 분해하고 진행 상태를 기록한다.
-> **규칙**: 작업 완료 시 체크박스를 채우고, 단계 완료 시 상태 표를 갱신한다. PRD와 어긋나는 결정이 생기면 §"결정 기록"에 남긴다. 요구사항의 원천은 항상 PRD이며, 이 문서는 "무엇이 언제 어디까지 되었는가"만 다룬다.
+> **규칙**:
+> - 작업 완료 시 체크박스를 채우고, 단계 완료 시 상태 표를 갱신한다. PRD와 어긋나는 결정이 생기면 §"결정 기록"에 남긴다. 요구사항의 원천은 항상 PRD이며, 이 문서는 "무엇이 언제 어디까지 되었는가"만 다룬다.
+> - **자주 커밋한다**: 의미 있는 단위 작업(디텍터 하나, 로더 하나, 테스트 묶음 등)이 끝나고 테스트가 통과하면 그 즉시 커밋한다. 마일스톤 끝까지 몰아서 하지 않는다. 커밋 메시지에는 어떤 PRD 항목/체크박스에 대응하는지 드러낸다. 푸시는 사용자 요청 시 또는 마일스톤 완료 시 수행한다.
 
 ## 전체 현황
 
@@ -29,7 +31,7 @@ PRD에는 없지만 M1 착수 전 필요한 기반 작업.
 - [x] 디렉터리 구조 확정 (src 레이아웃, PRD §6 컴포넌트에 1:1 대응 — 아래 참고)
 - [x] `config.yaml` 로더 + 스키마 검증 (PRD §10의 모든 키) — `src/order_monitor/config.py`, 예시 `config.example.yaml`, 테스트 `tests/test_config.py` (6 passed)
 - [x] 구조화 로그(JSON lines) 기반 셋업 (PRD §11.4) — `src/order_monitor/logging_setup.py` (stdlib `RotatingFileHandler`로 로테이션까지 포함, 외부 로그 라이브러리 불필요), 테스트 `tests/test_logging_setup.py` (8 passed 누적)
-- [x] git 저장소 초기화, `.gitignore` (`.venv/`, `*.log`, `*.db`/`*.sqlite3`, `config.yaml`, `.env` 등 제외 — 아직 커밋은 하지 않음, 사용자 요청 시 진행)
+- [x] git 저장소 초기화, `.gitignore` (`.venv/`, `*.log`, `*.db`/`*.sqlite3`, `config.yaml`, `.env`, `.claude/settings.local.json` 등 제외). 초기 커밋 `3a8d8e2` 후 원격 `origin`(github.com/ninthsun91/order-monitor)에 푸시 완료
 
 **완료 기준**: `config.yaml`을 읽어 로그 한 줄 남기고 종료하는 엔트리포인트가 동작한다.
 → **달성**. `src/order_monitor/main.py` + `[project.scripts] order-monitor` 등록. `config.example.yaml`을 로컬 `config.yaml`로 복사해 `order-monitor` CLI 실행 시 JSON 로그 한 줄(`config loaded`) 출력 및 로그 파일 기록 확인 (파일 1줄 + stderr 콘솔 출력은 별개 핸들러, 중복 아님). 테스트 9개 전체 통과.
@@ -49,7 +51,18 @@ src/order_monitor/
 tests/
 ```
 
-`config.py`, `logging_setup.py`, `main.py`는 아직 없음 — 다음 M0 작업(`config.yaml` 로더, 로그 셋업)에서 `src/order_monitor/` 최상위에 추가 예정.
+`src/order_monitor/` 최상위에 `config.py`(로더), `logging_setup.py`(JSON 로그), `main.py`(엔트리포인트)가 추가되어 있다.
+
+### M0 후속 세션 참고 노트
+
+DEVELOPMENT_PLAN 본문에는 드러나지 않지만 이후 작업 시 알아두면 좋은 사실들:
+
+- **git 커미터 신원 확인 필요 (미해결)**: 초기 커밋이 로컬 자동값 `Sewook Kim <alice@Sewooks-MacBook-Air.local>`로 기록됨. 사용자 실제 이메일은 `ninthsun91@gmail.com`이라 GitHub 기여 귀속이 안 될 수 있음. global git config(`user.name`/`user.email`)가 비어 있음. 다음 커밋 전에 신원을 설정할지 사용자에게 확인할 것. (초기 커밋은 이미 푸시되어 amend 시 force-push 필요하므로 임의로 건드리지 않음)
+- **의존성 실측 상태**: `ccxt 4.5.64` 설치됨, `import ccxt.pro` 정상(asyncio WebSocket), `aiohttp 3.14.1` 동반 설치됨. → M1 ccxt 스파이크 바로 착수 가능.
+- **`config.chat_id`는 문자열만 허용 (M2 주의)**: 현재 스키마는 `telegram.chat_id`를 `str`로 강제. 그런데 Telegram 그룹/채널 chat_id는 흔히 음의 정수(예: `-1001234567890`)라, YAML에 정수로 쓰면 `ConfigError`로 거부됨. `config.example.yaml`이 `"..."`(문자열)이라 이 함정이 가려져 있음. M2에서 Telegram 배선할 때 int→str 허용/강제 변환을 결정할 것.
+- **로컬 `config.yaml`은 gitignore됨**: 레포에는 `config.example.yaml`만 있음. 새 환경/세션에서는 이를 복사해 `config.yaml`을 만들어야 CLI가 동작함.
+- **로깅 이중 출력**: `setup_logging(also_stdout=True)`가 기본. 파일(`RotatingFileHandler`) + 콘솔(stderr) 양쪽에 찍힘. systemd 배포(M5) 시 저널 중복을 피하려면 `also_stdout` 조정 고려.
+- **`_RESERVED_ATTRS` 방식 검증됨**: `JsonFormatter`가 LogRecord 인스턴스에서 예약 속성 집합을 동적으로 구성하므로, Python 3.12가 추가한 `taskName` 속성도 자동으로 걸러짐(로그에 누출 안 됨). `extra=`로 넘긴 커스텀 필드만 JSON에 병합됨.
 
 ## M1 — Ingestion + 상태 모델 + 로그
 
