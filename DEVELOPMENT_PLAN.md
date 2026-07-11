@@ -133,9 +133,9 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 ## M4 — D5 상태기계 + 확정 알림
 
 - [ ] `INTENT_REGISTERED` 등록 (D1 APPEARED 입력, 크기 S 기록)
-- [ ] 전이 1: 가격 도달 + 체결 누적 ≥ S×`REALIZE_PCT` → `EXECUTION_CONFIRMED` (케이스 1)
+- [ ] 전이 1: 가격 도달 + 체결 누적 ≥ S×`REALIZE_PCT` → `EXECUTION_CONFIRMED` (케이스 1 — "해당 레벨 체결" 확인이지 원 표시 주문의 체결 확인 아님, PRD §8 D5 판정 의미)
 - [ ] 전이 2: PULLED → `INTENT_WITHDRAWN` (로그만)
-- [ ] 전이 3: 상위 구간 D4 누적 ≥ S×`REALIZE_PCT_ABOVE` → `EXECUTION_CONFIRMED_ABOVE` (케이스 2, 리필 확인분만 합산 — PRD §8 D5 집계 방식)
+- [ ] 전이 3: 상위 구간 D4 누적 ≥ S×`REALIZE_PCT_ABOVE` → `EXECUTION_INFERRED_ABOVE` (케이스 2, 리필 확인분만 합산 — PRD §8 D5 집계 방식. v1.2에서 `_CONFIRMED_ABOVE`에서 개명: 귀속 불가로 "추정" 등급)
 - [ ] `INTENT_TTL` 만료 → `INTENT_EXPIRED` (로그만)
 - [ ] `intents` 개수/시간 상한 (메모리 바운드)
 - [ ] 확정 알림 포맷: 실현률 %, 등록→확정 소요시간 포함 (PRD §9.3), 케이스 2는 "추정" 명시
