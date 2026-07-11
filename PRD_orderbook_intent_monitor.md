@@ -7,7 +7,7 @@
 | 상태 | Draft |
 | 대상 | 단일 개발자(운영자 겸), Claude Code 기반 개발 |
 
-> **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5). (4) D5 진행률 알림 추가 — 실현률이 `progress_step_pct`(20%) 경계를 넘을 때마다 중간 알림 (§8 D5, §9). 구현은 M4 코어 전이 검증 후. (5) TTL 청소를 `unconfirmed` 항목 전용으로 제한 — "무이벤트=유효" 원칙과의 모순 해소, 기산점은 `unconfirmed_since`, 기본 7일로 단축 (§12.1). (6) 스트림 헬스/세션 epoch 모델 도입 — 세 스트림 개별 감시, 하나라도 비정상이면 전 디텍터 판정 보류·활성 intent `INTERRUPTED`, diff `U`/`u`는 누락 탐지 전용, 워치독 staleness 스트림별 분리 (§5.1, §5.3, §5.4 신설, §11.1, §12). (7) D3 관통 판정 기준가 수정 — bid 벽의 관통을 best ask가 아닌 같은 side 신호(aggressor 체결가 주 신호 + best_bid 지속 보조 신호)로, 접촉 episode 단위로 판정 (§8 D3). (8) D4 산식을 경로 누적으로 교체 — peak/current 비교는 이벤트 경로를 잃어 무관한 신규 주문을 숨은 물량으로 오산, 체결 근접(`refill_window_ms`) 리필만 인정하고 `ICEBERG_MIN_TRADES`는 aggTrade 메시지 수 기준임을 명시 (§8 D4). (9) D5 상태기계 완결 — 등록 크기 S 정의(APPEARED 발화 시점 current_size 고정), FILLED 귀속 부분 체결 소멸에 `PARTIALLY_EXECUTED` 신설(WITHDRAWN은 PULLED 전용으로 분리), 평가 트리거·동시 발생 우선순위 명시, `INTERRUPTED`를 종국 상태 목록에 편입 (§8 D5, §9.1). (10) 알림 억제 범위 분리 + 핵심 알림 outbox — 가격 버킷 쿨다운은 D1/D2 전용, D5 종국 알림은 `(intent_id, terminal_state)` 멱등 키에 쿨다운 미적용, SQLite `alerts_outbox` 선기록으로 재시작 유실 방지 (§9.2, §9.4 신설, §12). (11) 명세 보강 — 시계 정책 상세화(`exchange_time`/`local_monotonic_receive_time` 용도 분리, depth의 거래소 시각 부재 해소, §11.1), 수치 표현형 Decimal 고정(§7), config 불변조건 검증(§10), 결정적 replay 테스트·오탐 지표를 완료 기준에 편입(§13). (12) 구현 전 검수 1회차(§5–§7) 반영 — `level_tracker`를 `{price, side, current_size, cum_traded_at_level}`로 축소(생애주기 필드는 v1.1 D1 이관의 잔재, `wall_registry`로 일원화), `wall_registry.last_seen_at`을 판정 미사용(관측용)으로 강등, §12.1의 스푸핑 필터 타이머 기준 필드 오기 정정(`first_seen_at` → `first_seen_above_threshold`) (§7, §12.1).
+> **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5). (4) D5 진행률 알림 추가 — 실현률이 `progress_step_pct`(20%) 경계를 넘을 때마다 중간 알림 (§8 D5, §9). 구현은 M4 코어 전이 검증 후. (5) TTL 청소를 `unconfirmed` 항목 전용으로 제한 — "무이벤트=유효" 원칙과의 모순 해소, 기산점은 `unconfirmed_since`, 기본 7일로 단축 (§12.1). (6) 스트림 헬스/세션 epoch 모델 도입 — 세 스트림 개별 감시, 하나라도 비정상이면 전 디텍터 판정 보류·활성 intent `INTERRUPTED`, diff `U`/`u`는 누락 탐지 전용, 워치독 staleness 스트림별 분리 (§5.1, §5.3, §5.4 신설, §11.1, §12). (7) D3 관통 판정 기준가 수정 — bid 벽의 관통을 best ask가 아닌 같은 side 신호(aggressor 체결가 주 신호 + best_bid 지속 보조 신호)로, 접촉 episode 단위로 판정 (§8 D3). (8) D4 산식을 경로 누적으로 교체 — peak/current 비교는 이벤트 경로를 잃어 무관한 신규 주문을 숨은 물량으로 오산, 체결 근접(`refill_window_ms`) 리필만 인정하고 `ICEBERG_MIN_TRADES`는 aggTrade 메시지 수 기준임을 명시 (§8 D4). (9) D5 상태기계 완결 — 등록 크기 S 정의(APPEARED 발화 시점 current_size 고정), FILLED 귀속 부분 체결 소멸에 `PARTIALLY_EXECUTED` 신설(WITHDRAWN은 PULLED 전용으로 분리), 평가 트리거·동시 발생 우선순위 명시, `INTERRUPTED`를 종국 상태 목록에 편입 (§8 D5, §9.1). (10) 알림 억제 범위 분리 + 핵심 알림 outbox — 가격 버킷 쿨다운은 D1/D2 전용, D5 종국 알림은 `(intent_id, terminal_state)` 멱등 키에 쿨다운 미적용, SQLite `alerts_outbox` 선기록으로 재시작 유실 방지 (§9.2, §9.4 신설, §12). (11) 명세 보강 — 시계 정책 상세화(`exchange_time`/`local_monotonic_receive_time` 용도 분리, depth의 거래소 시각 부재 해소, §11.1), 수치 표현형 Decimal 고정(§7), config 불변조건 검증(§10), 결정적 replay 테스트·오탐 지표를 완료 기준에 편입(§13). (12) 구현 전 검수 1회차(§5–§7) 반영 — `level_tracker`를 `{price, side, current_size, cum_traded_at_level}`로 축소(생애주기 필드는 v1.1 D1 이관의 잔재, `wall_registry`로 일원화), `wall_registry.last_seen_at`을 판정 미사용(관측용)으로 강등, §12.1의 스푸핑 필터 타이머 기준 필드 오기 정정(`first_seen_at` → `first_seen_above_threshold`) (§7, §12.1). (13) 검수 2회차(§8 D1–D4) 반영 — D1 조건식 명명을 wall_registry 필드(`peak_qty`/`last_qty`)로 정합화(v1.1 소스 이관의 잔재), D2의 "합산 모드 설정 제공" 문구 삭제(§10에 대응 config 키가 없던 추측성 설정 — 방향 분리 집계만으로 요구 충족, 필요 시 구현 시점에 추가) (§8 D1, D2).
 >
 > **v1.1 개정 (2026-07-11)**: M1 스파이크 실측 결과 top-20 창의 실제 폭이 현재가 ±$0.2~5 수준으로, "현재가 근처 20레벨로 충분" 가정이 본 시스템의 실제 목적(원거리 고래 벽 감시, 예: 61k의 1.3k BTC bid)과 어긋남이 확인됨. diff 스트림을 **full book 재구성 없이 "대형 레벨 이벤트 탭"으로만** 병행 사용하는 벽 레지스트리(wall registry)를 도입 (§5.1, §6, §7, §8, §10, §12 개정).
 
@@ -168,15 +168,15 @@ diff 스트림으로 full book을 유지하려면 REST 스냅샷 + U/u 시퀀스
 **2단 임계치**: 레지스트리에는 `record_min_qty_btc`(100) 이상이면 기록되지만(관측·튜닝 데이터), D1 APPEARED 후보는 그중 `SIZE_THRESHOLD`(1000) 이상만이다. 레지스트리 레벨의 크기 갱신은 이벤트 도착 시점(불규칙)이므로 `PERSIST_SECONDS` 판정은 `SIZE_THRESHOLD` 이상으로 관측된 최초 시각(`first_seen_above_threshold`) 기준으로 계산한다. `unconfirmed` 상태인 레벨은 새 이벤트로 확인되기 전까지 APPEARED 발화를 억제한다(§12).
 
 **발생(APPEARED) 조건** — 다음을 모두 만족하는 순간 발화:
-1. 어떤 레벨의 `current_size ≥ SIZE_THRESHOLD` (1000 BTC — 확정값, §15 #1. Binance 현물에서 "전달력 있는" 매수/매도 유동성 기준)
+1. 어떤 레벨의 `last_qty ≥ SIZE_THRESHOLD` (1000 BTC — 확정값, §15 #1. Binance 현물에서 "전달력 있는" 매수/매도 유동성 기준)
 2. 그 상태가 `PERSIST_SECONDS`(3s) 이상 연속 유지 ← **스푸핑 1차 필터**
 3. 해당 레벨에 대해 미발화 상태 (레벨당 1회, 레벨이 임계 밑으로 내려갔다 다시 올라오면 리셋)
 
-**제거(REMOVED) 조건** — 활성 레벨의 `current_size < SIZE_THRESHOLD × EXIT_RATIO`(0.5)로 하락 시, 감소 원인을 판정하여 발화:
-- `cum_traded_at_level ≥ (peak_size − current_size) × FILL_ATTRIBUTION`(0.7) → **`FILLED`** (실체결로 소진)
+**제거(REMOVED) 조건** — 활성 레벨의 `last_qty < SIZE_THRESHOLD × EXIT_RATIO`(0.5)로 하락 시, 감소 원인을 판정하여 발화:
+- `cum_traded_at_level ≥ (peak_qty − last_qty) × FILL_ATTRIBUTION`(0.7) → **`FILLED`** (실체결로 소진)
 - 그 외 → **`PULLED`** (취소/스푸핑 추정)
 
-**레지스트리 소멸 규칙 (v1.2)**: `record_min_qty_btc`는 **신규 가격의 등록 게이트일 뿐**, 이미 추적 중인 가격의 diff 이벤트는 잔량 값과 무관하게 항상 처리한다. 잔량 0은 명시적 tombstone으로 소멸 처리하고, `0 < 잔량 < record_min_qty_btc`로 하락한 경우에도 동일하게 — D1 활성 레벨이었다면 REMOVED 판정(FILLED/PULLED)을 먼저 수행한 뒤 — 활성 레지스트리에서 제거한다. 이 규칙이 없으면 1,200 → 50 BTC 감소 이벤트가 "하한 미만·0 아님"으로 무시되어 유령 벽(1,200)이 잔존하고, `current_size`가 갱신되지 않아 REMOVED 판정 자체도 발화하지 못한다.
+**레지스트리 소멸 규칙 (v1.2)**: `record_min_qty_btc`는 **신규 가격의 등록 게이트일 뿐**, 이미 추적 중인 가격의 diff 이벤트는 잔량 값과 무관하게 항상 처리한다. 잔량 0은 명시적 tombstone으로 소멸 처리하고, `0 < 잔량 < record_min_qty_btc`로 하락한 경우에도 동일하게 — D1 활성 레벨이었다면 REMOVED 판정(FILLED/PULLED)을 먼저 수행한 뒤 — 활성 레지스트리에서 제거한다. 이 규칙이 없으면 1,200 → 50 BTC 감소 이벤트가 "하한 미만·0 아님"으로 무시되어 유령 벽(1,200)이 잔존하고, `last_qty`가 갱신되지 않아 REMOVED 판정 자체도 발화하지 못한다.
 
 **평가 시점**: diff 탭 이벤트 도착마다 갱신(주기 불규칙 — 해당 가격에 변경이 있을 때만), 발화는 지속시간 타이머로 게이트.
 
@@ -184,7 +184,7 @@ diff 스트림으로 full book을 유지하려면 REST 스냅샷 + U/u 시퀀스
 
 **목적**: "특정 시간 내 일정 볼륨 발생 시 알림" 요구의 구현.
 
-**조건**: `trade_window` 내 합계 ≥ `VOL_THRESHOLD`(60초에 100 BTC). 매수/매도 aggressor 분리 집계를 기본으로 하고, 합산 모드도 설정으로 제공.
+**조건**: `trade_window` 내 합계 ≥ `VOL_THRESHOLD`(60초에 100 BTC). 매수/매도 aggressor 분리 집계.
 
 **평가 시점**: aggTrade 수신마다. `(방향)` 단위 쿨다운 `BURST_COOLDOWN`(120s)으로 연속 발화 억제.
 

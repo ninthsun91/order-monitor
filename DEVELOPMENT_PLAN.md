@@ -105,7 +105,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 - [ ] D1 APPEARED: `SIZE_THRESHOLD` + `PERSIST_SECONDS` 지속 필터 + 레벨당 1회 발화 (PRD §8 D1)
 - [ ] D1 REMOVED: `EXIT_RATIO` 하락 시 `FILLED` / `PULLED` 판정 (`FILL_ATTRIBUTION`)
-- [ ] D2 볼륨 버스트: 방향 분리 집계 + 합산 모드, `BURST_COOLDOWN` (PRD §8 D2)
+- [ ] D2 볼륨 버스트: 방향 분리 집계, `BURST_COOLDOWN` (PRD §8 D2 — 합산 모드는 v1.2 검수(13)에서 삭제)
 - [ ] Telegram 발송기: 비동기 큐, 초당 상한, 실패 시 백오프 재시도 (PRD §9.2, §11.1)
 - [ ] 토큰은 `TELEGRAM_BOT_TOKEN` 환경변수로만 주입
 - [ ] dedup **(v1.2 — D1/D2 전용)**: `(detector, side, price_bucket)` 키 + `ALERT_COOLDOWN` (D5는 intent 기반 별도 — PRD §9.2, M4에서 구현)
