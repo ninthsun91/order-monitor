@@ -21,6 +21,7 @@ class ThresholdsConfig:
     window_seconds: float
     burst_cooldown_seconds: float
     absorption_min_pct: float
+    pierce_persist_snapshots: int
     iceberg_margin_btc: float
     iceberg_min_trades: int
     realize_pct: float

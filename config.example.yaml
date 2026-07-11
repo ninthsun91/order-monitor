@@ -11,6 +11,7 @@ thresholds:
   window_seconds: 60             # D2
   burst_cooldown_seconds: 120
   absorption_min_pct: 0.3        # D3
+  pierce_persist_snapshots: 2    # D3 관통 보조 신호 지속성 (PRD §8 D3 v1.2)
   iceberg_margin_btc: 20         # D4
   iceberg_min_trades: 5
   realize_pct: 0.6               # D5
