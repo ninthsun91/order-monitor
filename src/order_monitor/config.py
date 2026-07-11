@@ -48,18 +48,25 @@ class WatchdogConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class WallTrackerConfig:
+    record_min_qty_btc: float
+    ttl_days: float
+
+
+@dataclasses.dataclass(frozen=True)
 class AppConfig:
     exchange: str
     symbol: str
     depth_stream: str
     thresholds: ThresholdsConfig
     alerts: AlertsConfig
+    wall_tracker: WallTrackerConfig
     telegram: TelegramConfig
     watchdog: WatchdogConfig
 
 
 _TOP_LEVEL_STR_FIELDS = ("exchange", "symbol", "depth_stream")
-_TOP_LEVEL_SECTION_FIELDS = ("thresholds", "alerts", "telegram", "watchdog")
+_TOP_LEVEL_SECTION_FIELDS = ("thresholds", "alerts", "wall_tracker", "telegram", "watchdog")
 
 
 def _check_value_type(section: str, name: str, value: object, expected_type: type) -> object:
@@ -130,6 +137,7 @@ def load_config(path: str | Path) -> AppConfig:
         **top_level_values,
         thresholds=_build_section(ThresholdsConfig, raw["thresholds"], "thresholds"),
         alerts=_build_section(AlertsConfig, raw["alerts"], "alerts"),
+        wall_tracker=_build_section(WallTrackerConfig, raw["wall_tracker"], "wall_tracker"),
         telegram=_build_section(TelegramConfig, raw["telegram"], "telegram"),
         watchdog=_build_section(WatchdogConfig, raw["watchdog"], "watchdog"),
     )

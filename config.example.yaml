@@ -3,7 +3,7 @@ symbol: BTC/USDT
 depth_stream: depth20@100ms
 
 thresholds:
-  size_threshold_btc: 300        # D1 대형 잔량 기준
+  size_threshold_btc: 1000       # D1/D5 인텐트 기준 (PRD v1.1 확정 — 벽 레지스트리 레벨에 적용)
   persist_seconds: 3             # D1 스푸핑 필터
   exit_ratio: 0.5
   fill_attribution: 0.7
@@ -22,6 +22,10 @@ alerts:
   send_d2: true
   bucket_size_usdt: 50
   cooldown_seconds: 300
+
+wall_tracker:                    # PRD v1.1 — diff 탭 벽 레지스트리
+  record_min_qty_btc: 100        # 레지스트리 "기록" 하한 (알림 아님 — 관측·튜닝 데이터용, 알림은 size_threshold_btc)
+  ttl_days: 14                   # 이 기간 동안 해당 가격에 이벤트 없으면 레지스트리에서 삭제
 
 telegram:
   chat_id: "..."                 # 토큰은 TELEGRAM_BOT_TOKEN env로

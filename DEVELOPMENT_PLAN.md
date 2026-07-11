@@ -10,7 +10,7 @@
 | 단계 | 내용 | 상태 | 완료일 |
 |---|---|---|---|
 | M0 | 프로젝트 스캐폴딩 | ✅ 완료 | 2026-07-11 |
-| M0.5 | PRD v1.1(벽 레지스트리) 반영 — 기존 스캐폴딩 정합화 | ⬜ 미착수 | |
+| M0.5 | PRD v1.1(벽 레지스트리) 반영 — 기존 스캐폴딩 정합화 | ✅ 완료 | 2026-07-11 |
 | M1 | Ingestion + 상태 모델 + 로그 | ⬜ 미착수 | |
 | M2 | D1 + D2 + Telegram 알림 | ⬜ 미착수 | |
 | M3 | 레벨별 체결 집계 + D3 + D4 | ⬜ 미착수 | |
@@ -68,13 +68,15 @@ DEVELOPMENT_PLAN 본문에는 드러나지 않지만 이후 작업 시 알아두
 
 PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 참고)으로 M0 산출물 중 설정 스키마가 구스펙 상태가 됨. M1 착수 전 정합화.
 
-- [ ] `config.py`: `WallTrackerConfig` 섹션 추가 (`record_min_qty_btc: float = 100`, `ttl_days: float = 14`) — 기존 `_build_section` 수동 검증 패턴 유지 (스키마 라이브러리 전환 금지)
-- [ ] `config.example.yaml`: `thresholds.size_threshold_btc` 300 → **1000** (PRD v1.1 확정값, 오픈 퀘스천 #1 결론)
-- [ ] `config.example.yaml`: `wall_tracker` 섹션 추가 (PRD §10 개정본과 일치)
-- [ ] `tests/test_config.py`: 새 섹션 로드/누락 키/미지 키/타입 검증 테스트 추가
-- [ ] CLAUDE.md 아키텍처 서술이 3-스트림 구조와 어긋나지 않는지 확인·갱신
+- [x] `config.py`: `WallTrackerConfig` 섹션 추가 (`record_min_qty_btc`, `ttl_days`) — 기존 `_build_section` 수동 검증 패턴 유지 (이 로더는 기본값 없이 전 키 필수 — 기본값 100/14는 `config.example.yaml`에 반영)
+- [x] `config.example.yaml`: `thresholds.size_threshold_btc` 300 → **1000** (PRD v1.1 확정값, 오픈 퀘스천 #1 결론)
+- [x] `config.example.yaml`: `wall_tracker` 섹션 추가 (PRD §10 개정본과 일치)
+- [x] `tests/test_config.py`: 새 섹션 로드/누락 키/미지 키/타입 검증 테스트 4건 추가 (누적 12 passed)
+- [x] CLAUDE.md 갱신: 3-스트림 파이프라인, ccxt 탈락 반영, "diff 탭 ≠ full book" 가드레일, 벽 레지스트리 영속화 예외 서술
 
-**완료 기준**: 새 스키마로 `config.example.yaml` 로드 성공 + 전체 테스트 통과.
+**완료 기준**: 새 스키마로 `config.example.yaml` 로드 성공 + 전체 테스트 통과. → **달성** (12 passed, `WallTrackerConfig(record_min_qty_btc=100.0, ttl_days=14.0)` 로드 확인).
+
+**M0.5 완료.**
 
 ## M1 — Ingestion + 상태 모델 + 로그
 
