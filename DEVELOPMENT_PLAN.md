@@ -11,7 +11,7 @@
 |---|---|---|---|
 | M0 | 프로젝트 스캐폴딩 | ✅ 완료 | 2026-07-11 |
 | M0.5 | PRD v1.1(벽 레지스트리) 반영 — 기존 스캐폴딩 정합화 | ✅ 완료 | 2026-07-11 |
-| M1 | Ingestion + 상태 모델 + 로그 | 🟠 검증 대기 (24h 런 남음) | |
+| M1 | Ingestion + 상태 모델 + 로그 | ✅ 완료 | 2026-07-12 |
 | M2 | D1 + D2 + Telegram 알림 | ⬜ 미착수 | |
 | M3 | 레벨별 체결 집계 + D3 + D4 | ⬜ 미착수 | |
 | M4 | D5 상태기계 + 확정 알림 | ⬜ 미착수 | |
@@ -101,7 +101,12 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 검증 기록:
 - 2026-07-11 25s 스모크 런 (구현 완료 직후): 연결 → epoch 1 시작 → 벽 1건 포착(40000 bid 259 BTC, walls DB 기록) → SIGINT 종료 시 disconnect 마킹(unconfirmed=1) DB 미러 확인. 92 tests passed
-- **(남음)** 검증 런 (2026-07-11 프로토콜 확정, 결정 기록 참고): **8h 런 + 수동 단절 1회 보완** — 런 중간에 네트워크를 2~3분 차단해 단절→백오프 재연결→epoch 재시작→레지스트리 unconfirmed 마킹→이벤트 해제 경로를 실증. RSS는 5분 간격 별도 샘플링. 24h 강제 단절 실증은 M5 7일 무인 운영 검증(매일 자연 발생)으로 이연
+- **2026-07-12 검증 런 통과** (프로토콜: 8h+수동 단절 — 결정 기록 참고. 실제 11h 15m, 07-11 23:33 ~ 07-12 10:49):
+  - **공백 없음**: 수동 단절 구간 외 staleness/epoch 경고 0건 (depth·diff 30s+, aggTrade 60s+ 공백 전무)
+  - **재연결 복구**: 09:45 네트워크 ~6분 차단 → 09:46:03 depth·diff stale(31s)로 epoch 종료 + 벽 22개 unconfirmed 마킹 → 09:46:33 aggTrade stale(61s, 별도 임계 실증) → 09:52:09 복귀 이벤트로 epoch 2 → 09:52:10 서버 CLOSE 도착, disconnect 재마킹, 백오프 1.0s → 09:52:11 재연결·epoch 3, 이후 무결점. 종료 SIGINT 시 disconnect 마킹 정상
+  - **메모리 평탄**: RSS 45.9MB → 2h 워밍업 후 48.7~49.8MB 밴드 9시간 플랫 (5분 간격 135샘플)
+  - 부수: 벽 레지스트리 22개 수렴(61k bid 1,364 BTC — 스파이크 관측값과 일치). 65000 ask가 record_min(100) 경계에서 3회 등록/소멸 반복 — 하한 플래핑 사례, M6 튜닝 참고
+  - **발견 사항**: 단절 6분간 재연결 시도 0회 — 클라이언트가 half-open TCP의 `receive()`에 블록, 복구는 서버 CLOSE 도착 덕분. CLOSE가 영영 안 오는 시나리오(NAT 타임아웃 등)면 무한 대기 = 조용한 실패. 후속 조치는 아래 M1 구현 노트 참고
 
 ### M1 구현 노트 (2026-07-11)
 
@@ -110,6 +115,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - **pyproject 의존성 정리**: ccxt 제거(탈락 확정), `aiohttp>=3.9` 직접 의존성 승격, dev에 `pytest-asyncio` 추가
 - **epoch 재시작 타이밍**: 라이브 연결 중 diff U/u 갭은 같은 이벤트 처리 내에서 즉시 새 epoch 시작 가능(세 스트림 모두 healthy + 직전 depth 스냅샷이 유효하므로). M2 디텍터는 EpochEnded에서 누적 리셋만 정확히 하면 됨
 - **wall_registry 시각 = wall-clock** (결정 기록 참고): D1(M2)의 `PERSIST_SECONDS` 판정은 이 필드(`first_seen_above_threshold`)와 비교하므로 wall-clock 기준으로 구현할 것
+- **(검증 런 발견, 미해결)** half-open TCP 무한 대기: staleness는 epoch만 종료하고 연결을 끊지 않으며, 클라이언트 자체 ping이 없어(`aiohttp` autoping은 서버 ping 응답 전용) 서버 CLOSE가 안 오면 `receive()` 무한 블록. 제안: `ws_connect(heartbeat=20)`(클라이언트 ping, pong 미수신 시 예외 → 기존 재연결 루프 작동). M5 워치독의 staleness 강제 재연결과 상호 보완 — 적용 시점 사용자 결정 대기
 
 ## M2 — D1 + D2 + Telegram 발송
 
