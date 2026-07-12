@@ -2,11 +2,13 @@
 
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v1.2 |
-| 작성일 | 2026-07-11 (v1.1/v1.2 개정 동일) |
+| 문서 버전 | v1.3 |
+| 작성일 | 2026-07-11 (v1.1/v1.2 개정 동일, v1.3은 2026-07-12) |
 | 상태 | Draft |
 | 대상 | 단일 개발자(운영자 겸), Claude Code 기반 개발 |
 
+> **v1.3 개정 (2026-07-12)**: D2를 에피소드형 상대 임계로 전면 개편 (M2 구현 중 사용자 요구 — 고정 임계의 유동성 국면 비적응, 스파이크 실시간 통지와 결과 정리의 분리 부재, 델타/흡수 성격 미구분). (1) 고정 임계 → 24h 이동 기준선 × 배수 + 절대 하한의 상대 임계 (§8 D2, §10). (2) 단발 알림+쿨다운 → 온셋/요약 2단 에피소드 모델 — 돌파 즉시 온셋, 종료(히스테리시스 + 병합 창) 후 누적·델타·지속시간·가격 변화 요약 (§8 D2, §9.1). (3) 방향 분리 트리거 → 총 테이커 볼륨 트리거 + 델타비 성격 라벨(방향성/혼합/양방향) — 흡수 확정은 D3 몫, 가격 변화 병기로 보조 (§8 D2). (4) D2의 시간 쿨다운 dedup 제거 — 에피소드+병합이 억제 메커니즘 (§9.2). (5) 기준선 워밍업용 REST klines 1회 부트스트랩 도입 — 상태 복원이 아닌 외부 소스 재조회로 §12 원칙 무관 (§8 D2). (6) 상태 모델에 `volume_baseline` 추가 (§7). 근거 실측: 2026-06-29~07-12 1분봉 백테스트로 사용자 지정 스파이크/흡수 9개 구간 전부 포착, 하루 ~7 에피소드 (DEVELOPMENT_PLAN 결정 기록 참고).
+>
 > **v1.2 개정 (2026-07-11)**: (1) 공개 스트림에는 주문/계정 식별자가 없어 케이스 2의 "실체결 확정"은 데이터상 불가능함을 반영, `EXECUTION_CONFIRMED_ABOVE` → `EXECUTION_INFERRED_ABOVE`로 개명하고 판정 의미(케이스 1 포함)를 명시 (§2.1, §8 D5, §9). 알림은 계속 기본 발송하되 "추정" 등급으로 구분. (2) 벽 레지스트리 갱신 규칙의 유령 벽 결함 수정 — 추적 중 가격은 잔량 값 불문 모든 diff 이벤트를 처리하고, 기록 하한은 신규 등록 게이트로만 사용 (§7, §8 D1). (3) 레벨 소멸 시 D5 즉시 종국 평가 도입 — 흡수(케이스 1/2)에 의한 소멸과 무체결 소멸을 구분하고 흡수 알림을 보장 (§8 D5). (4) D5 진행률 알림 추가 — 실현률이 `progress_step_pct`(20%) 경계를 넘을 때마다 중간 알림 (§8 D5, §9). 구현은 M4 코어 전이 검증 후. (5) TTL 청소를 `unconfirmed` 항목 전용으로 제한 — "무이벤트=유효" 원칙과의 모순 해소, 기산점은 `unconfirmed_since`, 기본 7일로 단축 (§12.1). (6) 스트림 헬스/세션 epoch 모델 도입 — 세 스트림 개별 감시, 하나라도 비정상이면 전 디텍터 판정 보류·활성 intent `INTERRUPTED`, diff `U`/`u`는 누락 탐지 전용, 워치독 staleness 스트림별 분리 (§5.1, §5.3, §5.4 신설, §11.1, §12). (7) D3 관통 판정 기준가 수정 — bid 벽의 관통을 best ask가 아닌 같은 side 신호(aggressor 체결가 주 신호 + best_bid 지속 보조 신호)로, 접촉 episode 단위로 판정 (§8 D3). (8) D4 산식을 경로 누적으로 교체 — peak/current 비교는 이벤트 경로를 잃어 무관한 신규 주문을 숨은 물량으로 오산, 체결 근접(`refill_window_ms`) 리필만 인정하고 `ICEBERG_MIN_TRADES`는 aggTrade 메시지 수 기준임을 명시 (§8 D4). (9) D5 상태기계 완결 — 등록 크기 S 정의(APPEARED 발화 시점 current_size 고정), FILLED 귀속 부분 체결 소멸에 `PARTIALLY_EXECUTED` 신설(WITHDRAWN은 PULLED 전용으로 분리), 평가 트리거·동시 발생 우선순위 명시, `INTERRUPTED`를 종국 상태 목록에 편입 (§8 D5, §9.1). (10) 알림 억제 범위 분리 + 핵심 알림 outbox — 가격 버킷 쿨다운은 D1/D2 전용, D5 종국 알림은 `(intent_id, terminal_state)` 멱등 키에 쿨다운 미적용, SQLite `alerts_outbox` 선기록으로 재시작 유실 방지 (§9.2, §9.4 신설, §12). (11) 명세 보강 — 시계 정책 상세화(`exchange_time`/`local_monotonic_receive_time` 용도 분리, depth의 거래소 시각 부재 해소, §11.1), 수치 표현형 Decimal 고정(§7), config 불변조건 검증(§10), 결정적 replay 테스트·오탐 지표를 완료 기준에 편입(§13). (12) 구현 전 검수 1회차(§5–§7) 반영 — `level_tracker`를 `{price, side, current_size, cum_traded_at_level}`로 축소(생애주기 필드는 v1.1 D1 이관의 잔재, `wall_registry`로 일원화), `wall_registry.last_seen_at`을 판정 미사용(관측용)으로 강등, §12.1의 스푸핑 필터 타이머 기준 필드 오기 정정(`first_seen_at` → `first_seen_above_threshold`) (§7, §12.1). (13) 검수 2회차(§8 D1–D4) 반영 — D1 조건식 명명을 wall_registry 필드(`peak_qty`/`last_qty`)로 정합화(v1.1 소스 이관의 잔재), D2의 "합산 모드 설정 제공" 문구 삭제(§10에 대응 config 키가 없던 추측성 설정 — 방향 분리 집계만으로 요구 충족, 필요 시 구현 시점에 추가) (§8 D1, D2). (14) 검수 3회차(§8 D5, §9) 반영 — S 정의 명명 정합화(`current_size` → `last_qty`), 케이스 2 집계를 `refill_added` 단일 항으로 정정(리필량과 그 유발 체결의 이중 계상 해석 제거), D1 FILLED 귀속의 생애 누적 한계를 수용 한계로 명시(알림 무영향 — 로그 전용 분류에만 관여) (§8 D1, D5). (15) 검수 4회차(§10, §12) 반영 — config 최상위 키 `exchange`·`depth_stream` 삭제(설계 고정 사항의 추측성 파라미터화 — 코드 상수로 이동, `symbol`만 유지), 임계치·알림·워치독 키 전수는 명세 역추적 확인으로 유지 (§10). (16) 검수 5회차(§1–4, §11, §13–16) 반영 — §15 #3(ask 벽 대칭 지원)을 확정 표기로 갱신(v1 포함, DEVELOPMENT_PLAN 트래킹과 정합화), §14 스펙 변경 리스크의 완화책을 정규화 계층 감지로 재서술(ccxt 탈락 후 "라이브러리 위임" 실효), §4 실현률 정의에 케이스 2의 `refill_added` 근사 단서 추가 (§4, §14, §15).
 >
 > **v1.1 개정 (2026-07-11)**: M1 스파이크 실측 결과 top-20 창의 실제 폭이 현재가 ±$0.2~5 수준으로, "현재가 근처 20레벨로 충분" 가정이 본 시스템의 실제 목적(원거리 고래 벽 감시, 예: 61k의 1.3k BTC bid)과 어긋남이 확인됨. diff 스트림을 **full book 재구성 없이 "대형 레벨 이벤트 탭"으로만** 병행 사용하는 벽 레지스트리(wall registry)를 도입 (§5.1, §6, §7, §8, §10, §12 개정).
@@ -146,6 +148,7 @@ diff 스트림으로 full book을 유지하려면 REST 스냅샷 + U/u 시퀀스
 | `order_book` | 최신 top-20 스냅샷 `{price: qty}` (bid/ask 각각) | depth 이벤트마다 통째 교체 |
 | `level_tracker` | top-20 레벨의 현재 크기 + 체결 귀속: `{price, side, current_size, cum_traded_at_level}` **(v1.2 축소 — `peak_size`·`first_seen_above_threshold`·`active`는 D1의 wall_registry 이관(v1.1)으로 소비처가 사라져 삭제. 레벨 생애주기 추적은 `wall_registry`가 담당)** | depth 이벤트(크기), aggTrade(체결 누적) |
 | `trade_window` | 최근 `WINDOW_SECONDS` 체결 deque: `(ts, price, qty, aggressor_side)` | aggTrade push, 만료분 pop |
+| `volume_baseline` (v1.3) | 최근 `vol_baseline_hours`(24h) 분당 총 테이커 볼륨 버킷 deque + 러닝 합계 — D2 상대 임계의 기준선 | aggTrade push (`exchange_time` 분 버킷 — 단일 스트림 시간창, §11.1), 기동 시 REST klines 1회 부트스트랩 (§8 D2) |
 | `intents` | D5 상태기계 인스턴스 목록 (§8 D5) | 디텍터 이벤트 |
 | `wall_registry` (v1.1) | 기록 하한(`wall_tracker.record_min_qty_btc`) 이상 대형 레벨: `{price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since}` — `last_seen_at`은 **판정 미사용**(구 TTL 규칙 폐기(§12.1 v1.2) 이후 관측·튜닝용만 남음. 로직을 걸지 말 것) | **(v1.2)** 신규 가격은 `record_min_qty_btc` 이상일 때만 등록. 이미 추적 중인 가격은 **잔량 값과 무관하게 모든 diff 이벤트로 덮어쓰기**. 잔량 0(명시적 tombstone) 또는 기록 하한 미만 하락 시 소멸 판정(§8 D1 REMOVED) 후 활성 레지스트리에서 제거 |
 
@@ -182,13 +185,33 @@ diff 스트림으로 full book을 유지하려면 REST 스냅샷 + U/u 시퀀스
 
 **평가 시점**: diff 탭 이벤트 도착마다 갱신(주기 불규칙 — 해당 가격에 변경이 있을 때만), 발화는 지속시간 타이머로 게이트.
 
-### D2 — 시간창 볼륨 버스트
+### D2 — 볼륨 버스트 (v1.3 — 에피소드형 상대 임계)
 
-**목적**: "특정 시간 내 일정 볼륨 발생 시 알림" 요구의 구현.
+**목적**: "특정 시간 내 일정 볼륨 발생 시 알림" 요구의 구현. 발생 순간의 실시간 통지(온셋)와 종료 후 결과 정리(요약)를 분리하고, 임계를 유동성 국면에 자동 추종시킨다.
 
-**조건**: `trade_window` 내 합계 ≥ `VOL_THRESHOLD`(60초에 100 BTC). 매수/매도 aggressor 분리 집계.
+**기준선 (상대 임계)**: 최근 `VOL_BASELINE_HOURS`(24h)의 분당 총 테이커 볼륨 평균 (§7 `volume_baseline`). 발화 임계:
 
-**평가 시점**: aggTrade 수신마다. `(방향)` 단위 쿨다운 `BURST_COOLDOWN`(120s)으로 연속 발화 억제.
+```
+THR = max(VOL_FLOOR(30 BTC), VOL_MULTIPLIER(10) × 분당 기준선)
+```
+
+절대 하한 `VOL_FLOOR`는 침체기에 기준선이 낮아져 소액 체결로 발화하는 것을 막는다. 근거 실측(2026-07-12 백테스트, 6/29~7/12 1분봉): 현 유동성(24h ~12k BTC)에서 THR ≈ 80~190 BTC로 구판 고정 100 BTC와 동급이나, 발화가 하루 ~17회 → ~7 에피소드로 줄면서 사용자 지정 스파이크/흡수 9개 구간은 전부 유지. 구판 고정 `VOL_THRESHOLD`는 폐기 — 유동성이 배수로 변하는 국면마다 수동 재설정이 필요했다.
+
+**워밍업**: 기동 직후 기준선 창이 비므로 REST `GET /api/v3/klines?interval=1m` 1440분치로 1회 부트스트랩한다. 실패 시(지오블록·레이트리밋 등) 로그를 남기고 창이 자연히 찰 때까지 D2 판정을 보류한다 — 인메모리 상태 복원(§12 금지 원칙)이 아니라 외부 소스 재조회이므로 원칙과 무관.
+
+**온셋 (에피소드 시작)**: epoch 활성 중 60초 창(`WINDOW_SECONDS`)의 **총** 테이커 볼륨(매수+매도 합산) ≥ THR인 순간 에피소드를 시작하고 온셋 알림을 발화한다. v1.2까지의 방향 분리 트리거는 폐기 — 방향 정보는 성격 라벨로 이동한다 (실측상 대형 15m 고볼륨 봉의 다수가 양방향 공방으로, 한쪽 방향만으로는 임계에 못 미쳐 놓친다).
+
+**에피소드 종료**: 60초 창 총합 < `THR × EPISODE_EXIT_RATIO`(0.5)로 식으면 잠정 종료. 이후 `EPISODE_MERGE_MINUTES`(10분) 내 재점화하면 같은 에피소드로 계속(온셋 재발화 없음), 재점화 없이 경과하면 확정 종료하고 요약 알림을 발화한다 — 누적 볼륨(기준선 대비 배수 병기)·델타(매수/매도 분해)·지속시간·가격 변화(시가→종가, 고저). 병합 창은 지속 고볼륨이 여러 파동으로 오는 패턴을 하나의 에피소드로 묶는다 (백테스트: 45분 지속 사례가 병합 없이는 4조각으로 파편화).
+
+**성격 라벨**: 델타비 `r = |매수 − 매도| / 총합` (온셋은 60초 창, 요약은 에피소드 누적 기준):
+
+- `r ≥ DELTA_DIRECTIONAL_RATIO`(0.5) → **방향성** (매수/매도 명시)
+- `r ≤ DELTA_BALANCED_RATIO`(0.2) → **양방향** (흡수성 후보)
+- 그 사이 → **혼합**
+
+흡수의 확정 판정은 오더북 반응을 보는 D3의 몫이며 D2는 테이커 흐름의 성격만 라벨한다 — 가격 변화를 병기해 "매도 델타가 큰데 가격이 안 밀림 = 흡수 후보"를 수신자가 메시지에서 직접 읽을 수 있게 한다.
+
+**평가 시점**: aggTrade 수신마다 + 1s 주기 틱 (체결이 끊겨도 창이 식으면 종료 판정이 진행되도록). epoch 종료 시 진행 중 에피소드는 폐기한다 (요약 미발송, 로그만 — 부분 누적은 신뢰 상실, §5.4). 분 버킷 적재는 상태 계층으로 계속된다.
 
 ### D3 — 흡수 (케이스 1)
 
@@ -301,7 +324,8 @@ EXECUTION_CONFIRMED  INTENT_WITHDRAWN   EXECUTION_INFERRED_ABOVE
 | D5 진행률 (`INTENT_PROGRESS`, v1.2) | 설정으로 on/off (기본 on) | 경계당 1회, 쿨다운 우회 (§8 D5 진행률 알림) |
 | D5 `PARTIALLY_EXECUTED` / `INTENT_WITHDRAWN` / `INTENT_EXPIRED` / `INTERRUPTED` | 발송 안 함 (로그/DB만) | 튜닝·사후 분석 데이터 (§8 D5 종국 상태 목록) |
 | D1 `APPEARED` / `FILLED` / `PULLED` | 설정으로 on/off (기본 off) | 튜닝 기간에만 on 권장 |
-| D2 볼륨 버스트 | 설정으로 on/off (기본 on) | |
+| D2 버스트 온셋 (v1.3) | 설정으로 on/off (`send_d2`, 기본 on) | 에피소드 시작 시 1회 |
+| D2 버스트 요약 (v1.3) | 설정으로 on/off (`send_d2_summary`, 기본 on) | 에피소드 확정 종료 시 1회 |
 | D3, D4 단독 | 발송 안 함 (D5 입력 전용) | 로그/DB에는 기록 |
 | Watchdog `FEED_STALE` / `PROCESS_DOWN` | **발송** | 운영 알림 |
 
@@ -309,7 +333,8 @@ EXECUTION_CONFIRMED  INTENT_WITHDRAWN   EXECUTION_INFERRED_ABOVE
 
 억제 메커니즘은 알림 종류별로 분리한다. 가격 버킷 쿨다운을 전 알림에 일괄 적용하면, 같은 버킷의 서로 다른 intent 두 개가 5분 내 확정될 때 두 번째 **핵심** 알림이 삼켜진다 — D5 종국 알림은 intent당 1회만 발생하므로 시간 쿨다운은 중복을 막는 게 아니라 진짜 신호만 잃는다.
 
-- **D1/D2 (노이즈 억제 전용)**: dedup 키 `(detector, side, price_bucket)` — `price_bucket`은 가격을 `BUCKET_SIZE`(50 USDT)로 양자화. 키당 쿨다운 `ALERT_COOLDOWN`(300s)
+- **D1 (노이즈 억제 전용)**: dedup 키 `(detector, side, price_bucket)` — `price_bucket`은 가격을 `BUCKET_SIZE`(50 USDT)로 양자화. 키당 쿨다운 `ALERT_COOLDOWN`(300s)
+- **D2 (v1.3 — 시간 쿨다운 미적용)**: 에피소드당 온셋 1회·요약 1회가 구조적으로 보장되고, 종료 후 `EPISODE_MERGE_MINUTES` 병합 창이 재점화 스팸을 흡수한다. 구판의 `(방향)` 쿨다운·가격 버킷 dedup은 에피소드 모델로 대체
 - **watchdog**: dedup 키 `(알림 종류, 스트림)` + `ALERT_COOLDOWN` (플래핑 스팸 방지)
 - **D5 종국 알림**: dedup 키 `(intent_id, terminal_state)`, **시간 쿨다운 미적용** — 이 키는 억제용이 아니라 재전송 멱등성 보장용이다 (§9.4 outbox 연동)
 - **D5 진행률 알림**: dedup 키 `(intent_id, 계열, 경계값)`, 시간 쿨다운 미적용 — 같은 경계의 중복 발화만 차단
@@ -361,9 +386,14 @@ thresholds:
   persist_seconds: 3             # D1 스푸핑 필터
   exit_ratio: 0.5
   fill_attribution: 0.7
-  vol_threshold_btc: 100         # D2
-  window_seconds: 60             # D2
-  burst_cooldown_seconds: 120
+  vol_floor_btc: 30              # D2 절대 하한 (v1.3 — vol_threshold_btc 대체. 기준선 붕괴 시 노이즈 방지)
+  vol_multiplier: 10             # D2 상대 임계 배수 (v1.3 — THR = max(floor, multiplier × 분당 기준선))
+  vol_baseline_hours: 24         # D2 기준선 창 (v1.3)
+  window_seconds: 60             # D2 온셋 창
+  episode_exit_ratio: 0.5        # D2 에피소드 종료 히스테리시스 (v1.3)
+  episode_merge_minutes: 10      # D2 에피소드 병합 창 (v1.3 — 잠정 종료 후 이 시간 내 재점화 = 같은 에피소드)
+  delta_directional_ratio: 0.5   # D2 성격 라벨: |Δ|/V ≥ 이 값 → 방향성 (v1.3)
+  delta_balanced_ratio: 0.2      # D2 성격 라벨: |Δ|/V ≤ 이 값 → 양방향(흡수성 후보) (v1.3)
   absorption_min_pct: 0.3        # D3
   pierce_persist_snapshots: 2    # D3 관통 보조 신호 지속성 (v1.2 — 아이스버그 리필 플리커 배제)
   iceberg_margin_btc: 20         # D4 최소 인정 리필량 (v1.2 — 산식 교체로 의미 이동)
@@ -376,7 +406,8 @@ thresholds:
 
 alerts:
   send_d1: false
-  send_d2: true
+  send_d2: true                  # v1.3 — 에피소드 온셋
+  send_d2_summary: true          # v1.3 — 에피소드 요약
   send_d5_progress: true         # D5 진행률 알림 (v1.2)
   bucket_size_usdt: 50
   cooldown_seconds: 300
@@ -402,8 +433,10 @@ watchdog:
 **불변조건 검증 (v1.2)**: 로더는 타입만이 아니라 값의 관계도 검증하며, 위반 시 기동을 거부한다:
 
 - 모든 수치 파라미터 > 0
-- 비율류(`exit_ratio`, `fill_attribution`, `absorption_min_pct`, `realize_pct`, `realize_pct_above`, `progress_step_pct`): 0 < x ≤ 1
+- 비율류(`exit_ratio`, `fill_attribution`, `absorption_min_pct`, `realize_pct`, `realize_pct_above`, `progress_step_pct`, `episode_exit_ratio`, `delta_directional_ratio`, `delta_balanced_ratio`): 0 < x ≤ 1
 - `wall_tracker.record_min_qty_btc < thresholds.size_threshold_btc` (2단 임계치 순서)
+- `thresholds.delta_balanced_ratio < thresholds.delta_directional_ratio` (성격 라벨 경계 순서, v1.3)
+- `thresholds.vol_multiplier > 1` (상대 임계의 의미 조건, v1.3)
 - `watchdog.heartbeat_interval < watchdog.stale_seconds`
 
 ## 11. 비기능 요구사항
