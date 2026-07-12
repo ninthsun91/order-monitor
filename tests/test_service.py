@@ -165,16 +165,28 @@ def test_d1_alert_gated_off_by_default(tmp_path):
     svc._store.close()
 
 
-def test_d2_burst_flows_to_alert_queue(service):
+def test_d2_onset_flows_to_alert_queue(service):
+    # 기준선 워밍업 완료 상태 흉내 (분당 4 BTC × 24h) → thr = max(30, 40) ≈ 40
+    service.volume_baseline.bootstrap((m * 60_000, Decimal(4)) for m in range(1440))
     start_feed(service)
-    service.on_event(AGG, agg_event(qty="60"))
+    service.on_event(AGG, agg_event(qty="20"))
     assert service.telegram.pending() == 0
-    service.on_event(AGG, agg_event(qty="50"))  # 창 합계 110.5 ≥ 100
+    service.on_event(AGG, agg_event(qty="20"))  # 창 총합 40.5 ≥ 임계 → 온셋
     assert service.telegram.pending() == 1
+    assert service.d2.episode_active
+
+
+def test_d2_held_during_baseline_warmup(service):
+    # 부트스트랩 실패 시나리오 — 창이 차기 전에는 대량 체결도 판정 보류 (PRD §8 D2)
+    start_feed(service)
+    service.on_event(AGG, agg_event(qty="500"))
+    assert service.telegram.pending() == 0
+    assert not service.d2.episode_active
 
 
 def test_detector_judgment_suspended_outside_epoch(service):
     # epoch 시작 전(세 스트림 수신 확인 전) — 상태는 적재되지만 판정은 보류
+    service.volume_baseline.bootstrap((m * 60_000, Decimal(4)) for m in range(1440))
     service.on_connected()
     service.on_event(AGG, agg_event(qty="200"))
     assert len(service.trade_window) == 1

@@ -20,6 +20,7 @@ from order_monitor.alerting.telegram import TelegramSender
 from order_monitor.config import AppConfig
 from order_monitor.detectors.d1 import D1Detector
 from order_monitor.detectors.d2 import D2Detector
+from order_monitor.ingestion.baseline_bootstrap import BootstrapError, fetch_minute_volumes
 from order_monitor.ingestion.events import (
     AggTradeEvent,
     DepthSnapshot,
@@ -39,6 +40,7 @@ from order_monitor.persistence.walls import WallStore
 from order_monitor.state.level_tracker import LevelTracker
 from order_monitor.state.order_book import OrderBook
 from order_monitor.state.trade_window import TradeWindow
+from order_monitor.state.volume_baseline import VolumeBaseline
 from order_monitor.state.wall_registry import WallRegistry
 
 logger = logging.getLogger(__name__)
@@ -78,9 +80,17 @@ class MonitorService:
             fill_attribution=Decimal(str(config.thresholds.fill_attribution)),
             cum_traded_lookup=self._cum_traded_at_level,
         )
+        self.volume_baseline = VolumeBaseline(config.thresholds.vol_baseline_hours)
         self.d2 = D2Detector(
-            vol_threshold=Decimal(str(config.thresholds.vol_threshold_btc)),
-            cooldown_seconds=config.thresholds.burst_cooldown_seconds,
+            vol_floor=Decimal(str(config.thresholds.vol_floor_btc)),
+            vol_multiplier=Decimal(str(config.thresholds.vol_multiplier)),
+            exit_ratio=Decimal(str(config.thresholds.episode_exit_ratio)),
+            merge_seconds=config.thresholds.episode_merge_minutes * 60.0,
+            directional_ratio=Decimal(str(config.thresholds.delta_directional_ratio)),
+            balanced_ratio=Decimal(str(config.thresholds.delta_balanced_ratio)),
+            window_seconds=config.thresholds.window_seconds,
+            window=self.trade_window,
+            baseline=self.volume_baseline,
         )
         self.telegram = TelegramSender(telegram_token, config.telegram.chat_id)
         self.dispatcher = AlertDispatcher(config, self.telegram)
@@ -105,6 +115,7 @@ class MonitorService:
 
     async def run(self) -> None:
         self.startup()
+        await self._bootstrap_baseline()
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(self.ws_client.run())
@@ -114,6 +125,24 @@ class MonitorService:
         finally:
             if self._store is not None:
                 self._store.close()
+
+    async def _bootstrap_baseline(self) -> None:
+        """D2 기준선 워밍업 (PRD §8 D2 v1.3) — 실패해도 기동은 계속, D2만 보류."""
+        minutes = int(self._config.thresholds.vol_baseline_hours * 60)
+        try:
+            bars = await fetch_minute_volumes(self._config.symbol, minutes)
+        except BootstrapError as exc:
+            logger.warning(
+                "baseline bootstrap failed — D2 held until window fills",
+                extra={"error": str(exc), "minutes": minutes},
+            )
+            return
+        self.volume_baseline.bootstrap(bars)
+        mean = self.volume_baseline.per_minute_mean()
+        logger.info(
+            "volume baseline bootstrapped",
+            extra={"bars": len(bars), "per_minute_mean": str(mean) if mean is not None else None},
+        )
 
     # ── WS 콜백 ────────────────────────────────────────────────
 
@@ -134,11 +163,11 @@ class MonitorService:
         elif isinstance(event, AggTradeEvent):
             self.trade_window.add(event)
             self.level_tracker.record_trade(event)
+            self.volume_baseline.add(event.exchange_time_ms, event.qty)
             # 판정은 epoch 활성 중에만 — 상태 적재는 위에서 이미 수행 (PRD §5.4)
             if self.tracker.epoch_active:
-                burst = self.d2.on_trade(event, self.trade_window)
-                if burst is not None:
-                    self._emit(burst)
+                for d2_event in self.d2.on_trade(event):
+                    self._emit(d2_event)
         elif isinstance(event, DiffDepthEvent):
             removals = self.wall_registry.apply_diff(event)
             assert self._store is not None
@@ -170,6 +199,9 @@ class MonitorService:
             if self.tracker.epoch_active:
                 for d1_event in self.d1.evaluate(self.wall_registry.walls()):
                     self._emit(d1_event)
+                # D2 에피소드 종료 판정 — 체결이 끊겨도 진행 (PRD §8 D2 v1.3)
+                for d2_event in self.d2.on_tick():
+                    self._emit(d2_event)
 
     async def _prune_loop(self) -> None:
         while True:
@@ -197,9 +229,12 @@ class MonitorService:
             if isinstance(notice, EpochStarted):
                 logger.info("epoch started", extra={"epoch_id": notice.epoch_id})
             elif isinstance(notice, EpochEnded):
-                # 판정 전제 붕괴 — D1 활성/후보 폐기 (PRD §5.4. D2 쿨다운은
-                # 판정 누적이 아니라 유지, trade_window도 상태 계층이라 유지)
+                # 판정 전제 붕괴 — D1 활성/후보, D2 진행 중 에피소드 폐기 (PRD §5.4.
+                # trade_window·volume_baseline은 상태 계층이라 유지)
                 self.d1.reset()
+                if self.d2.episode_active:
+                    logger.warning("d2 episode discarded on epoch end")
+                self.d2.reset()
                 logger.warning(
                     "epoch ended",
                     extra={"epoch_id": notice.epoch_id, "reason": notice.reason},

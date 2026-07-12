@@ -10,7 +10,7 @@ from order_monitor.alerting.dispatcher import AlertDispatcher
 from order_monitor.alerting.telegram import TelegramSender
 from order_monitor.config import load_config
 from order_monitor.detectors.d1 import D1Appeared, D1Attribution, D1Removed, D1Suppressed
-from order_monitor.detectors.d2 import D2Burst
+from order_monitor.detectors.d2 import D2BurstOnset, D2BurstSummary, D2Label
 from order_monitor.ingestion.events import Side
 
 EXAMPLE_CONFIG = Path(__file__).resolve().parent.parent / "config.example.yaml"
@@ -56,8 +56,33 @@ def removed():
     )
 
 
-def burst(side=Side.BUY):
-    return D2Burst(aggressor_side=side, sum_qty=Decimal("123.4"))
+def onset():
+    return D2BurstOnset(
+        window_qty=Decimal("152"),
+        buy_qty=Decimal("30"),
+        sell_qty=Decimal("122"),
+        threshold=Decimal("84"),
+        baseline_per_minute=Decimal("8.4"),
+        label=D2Label.DIRECTIONAL_SELL,
+        price=Decimal("64120"),
+        start_exchange_ms=1783825200000,
+    )
+
+
+def summary():
+    return D2BurstSummary(
+        start_exchange_ms=1783816920000,  # 2026-07-12 09:42 KST
+        end_exchange_ms=1783817820000,  # 09:57 KST
+        total_qty=Decimal("1207"),
+        buy_qty=Decimal("590"),
+        sell_qty=Decimal("617"),
+        baseline_per_minute=Decimal("8.4"),
+        label=D2Label.BALANCED,
+        open_price=Decimal("64300"),
+        high_price=Decimal("64320"),
+        low_price=Decimal("64020"),
+        close_price=Decimal("64150"),
+    )
 
 
 # ── 발송 정책 on/off (PRD §9.1) ──────────────────────────────
@@ -68,8 +93,21 @@ def test_send_d1_off_by_default_suppresses_d1_only():
     dispatcher = AlertDispatcher(make_config(), sender, monotonic=FakeClock())
     assert dispatcher.dispatch(appeared()) is False
     assert dispatcher.dispatch(removed()) is False
-    assert dispatcher.dispatch(burst()) is True
-    assert len(sender.sent) == 1
+    assert dispatcher.dispatch(onset()) is True
+    assert dispatcher.dispatch(summary()) is True
+    assert len(sender.sent) == 2
+
+
+def test_d2_send_flags_are_independent():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(send_d2=False), sender, monotonic=FakeClock())
+    assert dispatcher.dispatch(onset()) is False
+    assert dispatcher.dispatch(summary()) is True  # send_d2_summary는 별개 (PRD §9.1 v1.3)
+
+    sender2 = FakeSender()
+    dispatcher2 = AlertDispatcher(make_config(send_d2_summary=False), sender2, monotonic=FakeClock())
+    assert dispatcher2.dispatch(onset()) is True
+    assert dispatcher2.dispatch(summary()) is False
 
 
 def test_d1_suppressed_event_is_log_only():
@@ -86,11 +124,23 @@ def test_message_formats():
     sender = FakeSender()
     dispatcher = AlertDispatcher(make_config(send_d1=True), sender, monotonic=FakeClock())
     dispatcher.dispatch(appeared())
-    dispatcher.dispatch(burst())
+    dispatcher.dispatch(onset())
     assert "대형 벽 출현 (D1)" in sender.sent[0]
     assert "61,000 (bid) · 표시 1,200 BTC" in sender.sent[0]
-    assert "볼륨 버스트 — 매수 aggressor (D2)" in sender.sent[1]
-    assert "최근 60초 체결 합계 123.4 BTC (임계 100 BTC)" in sender.sent[1]
+    assert "볼륨 버스트 시작 (D2)" in sender.sent[1]
+    assert "60초 체결 152 BTC — 기준선(분당 8.4) 대비 18.1배" in sender.sent[1]
+    assert "성격: 방향성 매도 (|Δ|/V 0.61) · 현재가 64,120" in sender.sent[1]
+
+
+def test_d2_summary_format():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender, monotonic=FakeClock())
+    dispatcher.dispatch(summary())
+    text = sender.sent[0]
+    assert "볼륨 버스트 요약 (D2) — 15분 (KST 09:42~09:57)" in text
+    assert "누적 1,207 BTC (매수 590 / 매도 617 · Δ -27.0) — 15분 기준선 대비 9.6배" in text
+    assert "성격: 양방향(흡수성 후보)" in text
+    assert "가격: 64,300 → 64,150 (-0.23%) · 고 64,320 / 저 64,020" in text
 
 
 def test_d1_removed_format_shows_attribution():
@@ -117,15 +167,15 @@ def test_same_bucket_suppressed_within_cooldown():
     assert dispatcher.dispatch(appeared("61020")) is True
 
 
-def test_different_bucket_or_side_not_suppressed():
+def test_different_bucket_not_suppressed_and_d2_has_no_cooldown():
     clock = FakeClock()
     sender = FakeSender()
     dispatcher = AlertDispatcher(make_config(send_d1=True), sender, monotonic=clock)
     assert dispatcher.dispatch(appeared("61000")) is True
     assert dispatcher.dispatch(appeared("61050")) is True  # 다음 버킷
-    assert dispatcher.dispatch(burst(Side.BUY)) is True  # 디텍터 다름
-    assert dispatcher.dispatch(burst(Side.SELL)) is True  # 방향 다름
-    assert dispatcher.dispatch(burst(Side.BUY)) is False  # (d2, buy) 쿨다운
+    # D2는 시간 쿨다운 미적용 — 연속 온셋도 모두 발송 (에피소드 모델이 억제, PRD §9.2 v1.3)
+    assert dispatcher.dispatch(onset()) is True
+    assert dispatcher.dispatch(onset()) is True
 
 
 # ── Telegram 발송기 (PRD §9.2, §11.1) ────────────────────────
