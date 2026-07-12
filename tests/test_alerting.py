@@ -151,6 +151,28 @@ def test_d1_removed_format_shows_attribution():
     assert "피크 1,364.86 BTC → 잔량 0 BTC" in sender.sent[0]
 
 
+# ── FEED_STALE 워치독 알림 (PRD §11.1 — M5 선행분) ───────────
+
+
+def test_feed_stale_sent_regardless_of_flags_with_per_stream_cooldown():
+    from order_monitor.ingestion.health import StreamStale
+
+    clock = FakeClock()
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(
+        make_config(send_d1=False, send_d2=False, send_d2_summary=False), sender, monotonic=clock
+    )
+    stale = StreamStale(stream="btcusdt@depth20@100ms", silent_seconds=32.4)
+    assert dispatcher.dispatch(stale) is True
+    assert "🛑 피드 정지 (FEED_STALE)" in sender.sent[0]
+    assert "btcusdt@depth20@100ms — 32초간 수신 없음" in sender.sent[0]
+    # 같은 스트림 재발화는 쿨다운 내 억제, 다른 스트림은 즉시 발송
+    assert dispatcher.dispatch(stale) is False
+    assert dispatcher.dispatch(StreamStale(stream="btcusdt@aggTrade", silent_seconds=61)) is True
+    clock.now = 300.0
+    assert dispatcher.dispatch(stale) is True
+
+
 # ── dedup/쿨다운 (PRD §9.2) ──────────────────────────────────
 
 

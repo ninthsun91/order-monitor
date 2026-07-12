@@ -197,6 +197,14 @@ def test_wall_report_skipped_outside_epoch(service):
     assert service.build_wall_report() is None
 
 
+def test_stream_stale_notice_flows_to_alert_queue(service):
+    from order_monitor.ingestion.health import StreamStale
+
+    start_feed(service)
+    service._handle_notices([StreamStale(stream=DEPTH, silent_seconds=31.0)])
+    assert service.telegram.pending() == 1
+
+
 def test_detector_judgment_suspended_outside_epoch(service):
     # epoch 시작 전(세 스트림 수신 확인 전) — 상태는 적재되지만 판정은 보류
     service.volume_baseline.bootstrap((m * 60_000, Decimal(4)) for m in range(1440))

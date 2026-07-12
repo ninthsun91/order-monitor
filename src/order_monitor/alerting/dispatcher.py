@@ -22,6 +22,7 @@ from order_monitor.config import AppConfig
 from order_monitor.detectors.d1 import D1Appeared, D1Attribution, D1Removed
 from order_monitor.detectors.d2 import D2BurstOnset, D2BurstSummary, D2Label
 from order_monitor.ingestion.events import Side
+from order_monitor.ingestion.health import StreamStale
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,11 @@ class AlertDispatcher:
                 return False
             self._sender.enqueue(self._format_d2_summary(event))
             return True
+        elif isinstance(event, StreamStale):
+            # 워치독 알림은 on/off 없이 상시 — 조용한 실패가 최우선 리스크 (PRD §11.1).
+            # 쿨다운은 재연결 플랩 시 스트림당 반복 발송 억제용
+            key = ("watchdog", "feed_stale", event.stream)
+            text = self._format_feed_stale(event)
         else:
             return False
 
@@ -138,6 +144,14 @@ class AlertDispatcher:
             f"레벨: {_fmt(event.price)} ({_SIDE_LABEL[event.side]}) · "
             f"피크 {_fmt(event.peak_qty)} BTC → 잔량 {_fmt(event.last_qty)} BTC\n"
             f"레벨 체결 누적: {_fmt(event.cum_traded)} BTC"
+        )
+
+    def _format_feed_stale(self, event: StreamStale) -> str:
+        return (
+            f"🛑 피드 정지 (FEED_STALE)\n"
+            f"심볼: {self._symbol} (Binance Spot)\n"
+            f"스트림: {event.stream} — {event.silent_seconds:.0f}초간 수신 없음\n"
+            f"판정 중단(epoch 종료) — 수신 재개 시 자동 복귀"
         )
 
     def _format_d2_onset(self, event: D2BurstOnset) -> str:

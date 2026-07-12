@@ -272,6 +272,8 @@ class MonitorService:
                     "stream stale",
                     extra={"stream": notice.stream, "silent_seconds": notice.silent_seconds},
                 )
+                # M5 워치독 선행분: FEED_STALE 텔레그램 알림 (PRD §11.1)
+                self.dispatcher.dispatch(notice)
             elif isinstance(notice, DiffListeningGap):
                 self.wall_registry.mark_all_unconfirmed()
                 if self._store is not None:

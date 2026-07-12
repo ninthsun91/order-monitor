@@ -201,7 +201,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 ## M5 — Watchdog + systemd + 배포
 
-- [ ] 인프로세스 워치독 **(v1.2 스트림별)**: depth·diff는 `stale_seconds`, aggTrade는 `trade_stale_seconds` 초과 시 스트림명 명시한 `FEED_STALE` 알림 + epoch 종료 (PRD §11.1, §5.4)
+- [x] 인프로세스 워치독 **(v1.2 스트림별)**: depth·diff는 `stale_seconds`, aggTrade는 `trade_stale_seconds` 초과 시 스트림명 명시한 `FEED_STALE` 알림 + epoch 종료 (PRD §11.1, §5.4) — **2026-07-12 D1&D2 우선 배포 준비로 선행 구현** (staleness 감지+epoch 종료는 M1 기존, Telegram 배선 추가). on/off 없이 상시 발송, 재연결 플랩 억제는 스트림별 쿨다운(`cooldown_seconds`) 재사용
 - [ ] 하트비트 파일 기록 + 외부 경량 워치독(cron/systemd timer)이 행(hang) 상태 감지 → `PROCESS_DOWN` 알림
 - [ ] systemd 유닛: `Restart=always, RestartSec=5` (또는 Docker `restart: unless-stopped`)
 - [ ] 로그 로테이션 설정
