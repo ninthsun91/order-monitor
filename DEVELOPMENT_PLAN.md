@@ -203,10 +203,10 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 - [x] 인프로세스 워치독 **(v1.2 스트림별)**: depth·diff는 `stale_seconds`, aggTrade는 `trade_stale_seconds` 초과 시 스트림명 명시한 `FEED_STALE` 알림 + epoch 종료 (PRD §11.1, §5.4) — **2026-07-12 D1&D2 우선 배포 준비로 선행 구현** (staleness 감지+epoch 종료는 M1 기존, Telegram 배선 추가). on/off 없이 상시 발송, 재연결 플랩 억제는 스트림별 쿨다운(`cooldown_seconds`) 재사용
 - [ ] 하트비트 파일 기록 + 외부 경량 워치독(cron/systemd timer)이 행(hang) 상태 감지 → `PROCESS_DOWN` 알림
-- [ ] systemd 유닛: `Restart=always, RestartSec=5` (또는 Docker `restart: unless-stopped`)
-- [ ] 로그 로테이션 설정
-- [ ] VPS 준비: 리전 선정(도쿄/싱가포르), **배포 전 해당 IP에서 Binance WS/REST 접속 검증** (PRD §11.3)
-- [ ] 배포 절차 문서화 (README 또는 runbook)
+- [x] systemd 유닛: `Restart=always, RestartSec=5` — `deploy/order-monitor.service` 작성 (2026-07-12, Docker 기각 — 결정 기록). VPS 실적용·검증은 배포 시
+- [x] 로그 로테이션 설정 — `RotatingFileHandler`(M0 기존) + journald 용량 제한 절차를 RUNBOOK §5에 문서화 (2026-07-12)
+- [ ] VPS 준비: 리전 선정(**Hostinger KVM — 미국 리전 금지, 싱가포르/유럽 권장**), **배포 전 해당 IP에서 Binance WS/REST 접속 검증** (PRD §11.3) — 검증 절차는 RUNBOOK §0 (REST ping·klines + WS 3경로)
+- [x] 배포 절차 문서화 (README 또는 runbook) — `deploy/RUNBOOK.md` (2026-07-12: 지오블록 검증, 설치, env 시크릿, systemd, 운영 절차, 7일 검증 기준)
 
 **완료 기준 (PRD)**: VPS에서 7일 무인 운영, 조용한 실패 0건.
 **검증 방법**: 7일 후 로그 감사 — 모든 단절/재시작 이벤트에 대응하는 Telegram 통지가 존재하는지 대조.
@@ -251,6 +251,7 @@ PRD와 다르게 결정했거나 PRD가 열어둔 것을 확정한 사항. 날�
 | 2026-07-12 | **알림 메시지 한국어 고정** (오픈 퀘스천 #4 종결) — 템플릿화 없이 `alerting/dispatcher.py`에 포맷 함수로 직접 구현 | 단일 사용자·한국어 수신 전제에서 템플릿 계층은 요구 없는 유연성(추측성 추상화). PRD §9.3 예시도 한국어. 다국어 필요가 실제로 생기면 그때 포맷 함수만 교체하면 됨 |
 | 2026-07-12 | **D1 활성 latch는 REMOVED까지 유지** — exit~임계 데드밴드 회복 시 재발화 안 함 (PRD §8 D1 조건 3의 "리셋"을 REMOVED 이후로 해석) | 데드밴드 내 재발화는 같은 벽에 중복 인텐트를 만들고 EXIT_RATIO 히스테리시스 의도와 충돌. M2 구현 노트 참고 — 사용자 리뷰 대상 |
 | 2026-07-12 | **D2 v1.3 전면 개편 — 에피소드형 상대 임계** (PRD v1.3, 사용자 승인 플랜): 24h 이동 기준선 × k=10 + 하한 30 BTC, 총 볼륨 트리거 + 델타비 라벨(0.5/0.2), 온셋/요약 2단, 병합 10분, D2 시간 쿨다운 폐지, REST 워밍업 부트스트랩 | 사용자 요구 3건(고정 임계의 유동성 비적응 / 15m 기준의 최대 15분 지연 / 델타·흡수 스파이크 미구분). 파라미터는 백테스트로 확정: 6/29~7/12 1분봉에서 사용자 지정 9개 구간(7/12 09:45 지속형, 7/9 21:15 스파이크, 7/6 델타 2건, 7/1~7/2 흡수+델타 연쇄, 7/1 10:00·6/30 22:30 흡수) 전부 포착 + 7.3 에피소드/일 (k=8: 11/일, k=12: 6/일 — 일부 에피소드 축소). 업계 방식(RVOL 상대 볼륨, z-score/EWMA 적응 임계, CVD 델타 분류) 조사 반영. 시간대별 기준선(RVOL-TOD, 일중 계절성 실측 2.8x)은 스파이크 배수(9~28x) 대비 작아 v1에서 보류 — M6 재검토. 백테스트 도구는 `scripts/backtest_d2.py`로 보존 |
+| 2026-07-12 | **배포 방식 = git pull + venv + systemd, Docker 기각** (사용자 확정. 대상: Hostinger KVM2 / Ubuntu 24.04). D1&D2 상태 우선 배포를 위해 M5 중 워치독 알림·systemd 유닛·런북을 선행하고 M3/M4는 배포 후 진행 | 의존성 2개(pyyaml·aiohttp)·순수 Python·SQLite 표준 라이브러리라 Docker의 재현성 이점이 없음. Ubuntu 24.04 기본 python3 = 3.12로 요구 버전 일치. 프로세스 감독은 어차피 systemd 몫이고, M6 임계치 튜닝의 config 수정→restart 사이클도 이미지 재빌드 없는 쪽이 단순 |
 | 2026-07-12 | **물량벽 정기 리포트 신설** (PRD 외 신규 기능, 사용자 요청·플랜 승인 — `alerting/wall_report.py`): `alerts.send_wall_report` + `wall_report_interval_minutes`(기본 60분) 추가. 벽 레지스트리 스냅샷을 저항(ask)/지지(bid)로 나눠 정기 발송 — 대형(≥`size_threshold_btc`) 전부 + 소형은 현재가 근접순 8개 캡("외 N개" 표기), unconfirmed `?` 접미, 현재가 반대편 unconfirmed 잔재(가격 통과 후 미재확인)는 표시 제외. epoch 활성 + 오더북 존재 시에만 발송(스킵 시 로그), dedup/쿨다운 미적용 | 이벤트형 알림(D1/D2)만으로는 현 시점 벽 분포를 한눈에 볼 수 없다는 사용자 요청. 정기 스냅샷이라 쿨다운 불필요, 현재가는 depth 기반이므로 epoch 게이팅 준수. 캡은 텔레그램 4,096자 한도 + 가독성 |
 | 2026-07-11 | 벽 레지스트리 SQLite 영속화 + unconfirmed 플래그 + TTL 14일 — "인메모리 상태 미복원" 원칙(PRD §12)의 유일한 예외 | 원거리 벽 시야는 청취 누적으로만 형성되므로 재시작 초기화 비용이 큼. 신뢰도 하락은 **청취 공백**(재시작·재연결 갭)에서만 발생(연결 중 무이벤트 = 무변화 = 값 유효) → 공백 시 전체 unconfirmed 마킹, 가격별 새 이벤트(절대 잔량)로 자동 해제, 능동 재검증 API는 부재. unconfirmed 중 APPEARED 발화 억제 + `first_seen_at` 보존(스푸핑 필터 타이머 유지). TTL 14일(설정값, 사용자 경험상 2주 초과 지속 벽 드묾)은 신뢰도가 아닌 저장 위생 규칙 — `events` 이력은 보존해 M6 튜닝 데이터 유지. **(주)** 이후 PRD v1.2 (5)에서 TTL은 unconfirmed 전용·기산점 `unconfirmed_since`·기본 7일로 개정됨 |
 

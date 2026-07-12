@@ -1,0 +1,24 @@
+# /etc/systemd/system/order-monitor.service
+# 설치 절차는 deploy/RUNBOOK.md 참고 (M5 — Restart=always, RestartSec=5)
+
+[Unit]
+Description=BTC orderbook intent monitor (D1/D2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=monitor
+Group=monitor
+WorkingDirectory=/opt/order-monitor
+# TELEGRAM_BOT_TOKEN은 이 파일로만 주입 (권한 600 — RUNBOOK 3단계)
+EnvironmentFile=/etc/order-monitor/env
+ExecStart=/opt/order-monitor/.venv/bin/order-monitor \
+    --config /opt/order-monitor/config.yaml \
+    --log-file /var/lib/order-monitor/order_monitor.log \
+    --db-file /var/lib/order-monitor/order_monitor.db
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
