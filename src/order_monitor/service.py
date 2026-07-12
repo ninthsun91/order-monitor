@@ -17,6 +17,7 @@ from pathlib import Path
 
 from order_monitor.alerting.dispatcher import AlertDispatcher
 from order_monitor.alerting.telegram import TelegramSender
+from order_monitor.alerting.wall_report import format_wall_report
 from order_monitor.config import AppConfig
 from order_monitor.detectors.d1 import D1Detector
 from order_monitor.detectors.d2 import D2Detector
@@ -121,6 +122,7 @@ class MonitorService:
                 group.create_task(self.ws_client.run())
                 group.create_task(self._staleness_loop())
                 group.create_task(self._prune_loop())
+                group.create_task(self._wall_report_loop())
                 group.create_task(self.telegram.run())
         finally:
             if self._store is not None:
@@ -202,6 +204,32 @@ class MonitorService:
                 # D2 에피소드 종료 판정 — 체결이 끊겨도 진행 (PRD §8 D2 v1.3)
                 for d2_event in self.d2.on_tick():
                     self._emit(d2_event)
+
+    async def _wall_report_loop(self) -> None:
+        """물량벽 정기 리포트 — epoch 활성 중에만 발송 (현재가는 depth 기반)."""
+        if not self._config.alerts.send_wall_report:
+            return
+        interval = self._config.alerts.wall_report_interval_minutes * 60.0
+        while True:
+            await asyncio.sleep(interval)
+            text = self.build_wall_report()
+            if text is None:
+                logger.info("wall report skipped — epoch inactive or book empty")
+                continue
+            self.telegram.enqueue(text)
+
+    def build_wall_report(self) -> str | None:
+        best_bid, best_ask = self.order_book.best_bid, self.order_book.best_ask
+        if not self.tracker.epoch_active or best_bid is None or best_ask is None:
+            return None
+        return format_wall_report(
+            self.wall_registry.walls(),
+            best_bid=best_bid,
+            best_ask=best_ask,
+            symbol=self._config.symbol,
+            size_threshold=Decimal(str(self._config.thresholds.size_threshold_btc)),
+            now_epoch_seconds=time.time(),
+        )
 
     async def _prune_loop(self) -> None:
         while True:

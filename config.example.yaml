@@ -28,6 +28,8 @@ alerts:
   send_d2: true                  # D2 에피소드 온셋 (PRD v1.3)
   send_d2_summary: true          # D2 에피소드 요약 (PRD v1.3)
   send_d5_progress: true         # D5 진행률 알림 (PRD v1.2)
+  send_wall_report: true         # 물량벽 정기 리포트 (DEVELOPMENT_PLAN 결정 기록 참고)
+  wall_report_interval_minutes: 60
   bucket_size_usdt: 50
   cooldown_seconds: 300
 

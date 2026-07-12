@@ -184,6 +184,19 @@ def test_d2_held_during_baseline_warmup(service):
     assert not service.d2.episode_active
 
 
+def test_wall_report_built_from_registry_and_book(service):
+    start_feed(service)
+    text = service.build_wall_report()
+    # start_feed의 diff 벽(60000/1200 BTC bid), 현재가는 best bid/ask 중간값
+    assert "🧱 60,000 — 1,200 BTC" in text
+    assert "현재가 61,000" in text  # (61000+61001)/2 반올림
+
+
+def test_wall_report_skipped_outside_epoch(service):
+    service.on_connected()
+    assert service.build_wall_report() is None
+
+
 def test_detector_judgment_suspended_outside_epoch(service):
     # epoch 시작 전(세 스트림 수신 확인 전) — 상태는 적재되지만 판정은 보류
     service.volume_baseline.bootstrap((m * 60_000, Decimal(4)) for m in range(1440))

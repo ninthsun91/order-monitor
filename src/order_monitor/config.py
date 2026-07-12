@@ -42,6 +42,8 @@ class AlertsConfig:
     send_d2: bool
     send_d2_summary: bool
     send_d5_progress: bool
+    send_wall_report: bool
+    wall_report_interval_minutes: float
     bucket_size_usdt: float
     cooldown_seconds: float
 
