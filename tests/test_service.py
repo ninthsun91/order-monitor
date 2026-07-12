@@ -20,10 +20,15 @@ DEPTH, AGG, DIFF = stream_names("BTC/USDT")
 
 @pytest.fixture
 def service(tmp_path):
-    svc = MonitorService(load_config(EXAMPLE_CONFIG), db_path=tmp_path / "monitor.db")
-    svc.startup()
+    svc = make_service(load_config(EXAMPLE_CONFIG), tmp_path)
     yield svc
     svc._store.close()
+
+
+def make_service(config, tmp_path):
+    svc = MonitorService(config, db_path=tmp_path / "monitor.db", telegram_token="test-token")
+    svc.startup()
+    return svc
 
 
 def depth_event(bids=(("61000", "1.0"),), asks=(("61001", "1.0"),), mono=0.0):
@@ -108,16 +113,13 @@ def test_wall_removal_synced_to_db(service):
 
 
 def test_restart_restores_walls_as_unconfirmed(tmp_path):
-    db = tmp_path / "monitor.db"
     config = load_config(EXAMPLE_CONFIG)
 
-    svc1 = MonitorService(config, db_path=db)
-    svc1.startup()
+    svc1 = make_service(config, tmp_path)
     start_feed(svc1)
     svc1._store.close()
 
-    svc2 = MonitorService(config, db_path=db)
-    svc2.startup()
+    svc2 = make_service(config, tmp_path)
     wall = svc2.wall_registry.get(Side.BUY, Decimal("60000"))
     assert wall is not None and wall.unconfirmed  # 복원 직후 공백 마킹 (§12.1 규칙 1)
     assert svc2._store.load()[0].unconfirmed
@@ -126,3 +128,54 @@ def test_restart_restores_walls_as_unconfirmed(tmp_path):
     svc2.on_event(DIFF, diff_event(500, 510, bids=[("60000", "1250")]))
     assert not svc2.wall_registry.get(Side.BUY, Decimal("60000")).unconfirmed
     svc2._store.close()
+
+
+# ── M2 배선: 디텍터 판정 + 알림 (PRD §5.4 epoch 게이팅, §9.1) ──
+
+
+def config_with(*, persist_seconds=None, send_d1=None):
+    import dataclasses
+
+    config = load_config(EXAMPLE_CONFIG)
+    if persist_seconds is not None:
+        config = dataclasses.replace(
+            config, thresholds=dataclasses.replace(config.thresholds, persist_seconds=persist_seconds)
+        )
+    if send_d1 is not None:
+        config = dataclasses.replace(
+            config, alerts=dataclasses.replace(config.alerts, send_d1=send_d1)
+        )
+    return config
+
+
+def test_d1_appeared_flows_to_alert_queue_when_enabled(tmp_path):
+    svc = make_service(config_with(persist_seconds=1e-9, send_d1=True), tmp_path)
+    start_feed(svc)
+    # 다음 diff 이벤트가 평가를 트리거 — 60000 벽(1200 ≥ 1000)이 지속 필터 통과
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
+    assert svc.telegram.pending() == 1
+    svc._store.close()
+
+
+def test_d1_alert_gated_off_by_default(tmp_path):
+    svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
+    start_feed(svc)
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
+    assert svc.telegram.pending() == 0  # send_d1 기본 off (PRD §9.1)
+    svc._store.close()
+
+
+def test_d2_burst_flows_to_alert_queue(service):
+    start_feed(service)
+    service.on_event(AGG, agg_event(qty="60"))
+    assert service.telegram.pending() == 0
+    service.on_event(AGG, agg_event(qty="50"))  # 창 합계 110.5 ≥ 100
+    assert service.telegram.pending() == 1
+
+
+def test_detector_judgment_suspended_outside_epoch(service):
+    # epoch 시작 전(세 스트림 수신 확인 전) — 상태는 적재되지만 판정은 보류
+    service.on_connected()
+    service.on_event(AGG, agg_event(qty="200"))
+    assert len(service.trade_window) == 1
+    assert service.telegram.pending() == 0
