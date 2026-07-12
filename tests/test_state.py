@@ -115,3 +115,57 @@ class TestLevelTracker:
         entry = tracker.get(Side.BUY, Decimal("61000"))
         assert entry.current_size == Decimal("4.0")
         assert entry.cum_traded_at_level == Decimal("1.0")
+
+
+class TestTradeWindowTotals:
+    def test_totals_split_by_aggressor(self):
+        window = TradeWindow(60.0)
+        window.add(trade("61000", "3", aggressor=Side.BUY, t_ms=0))
+        window.add(trade("61000", "2", aggressor=Side.SELL, t_ms=1000))
+        window.add(trade("61000", "5", aggressor=Side.BUY, t_ms=2000))
+        assert window.totals() == (Decimal(8), Decimal(2))
+
+    def test_iteration_in_arrival_order(self):
+        window = TradeWindow(60.0)
+        window.add(trade("61000", "1", t_ms=0))
+        window.add(trade("61001", "1", t_ms=1000))
+        assert [t.price for t in window] == [Decimal("61000"), Decimal("61001")]
+
+
+class TestVolumeBaseline:
+    def make(self, hours=24.0):
+        from order_monitor.state.volume_baseline import VolumeBaseline
+
+        return VolumeBaseline(hours)
+
+    def test_not_ready_until_window_spans(self):
+        baseline = self.make(hours=1.0)  # 60분 창
+        for minute in range(59):
+            baseline.add(minute * 60_000, Decimal(2))
+        assert baseline.per_minute_mean() is None
+        baseline.add(59 * 60_000, Decimal(2))
+        assert baseline.per_minute_mean() == Decimal(2)
+
+    def test_missing_minutes_count_as_zero(self):
+        baseline = self.make(hours=1.0)
+        baseline.add(0, Decimal(30))
+        baseline.add(59 * 60_000, Decimal(30))  # 중간 58분 무체결
+        assert baseline.per_minute_mean() == Decimal(1)
+
+    def test_rolling_eviction(self):
+        baseline = self.make(hours=1.0)
+        for minute in range(60):
+            baseline.add(minute * 60_000, Decimal(1))
+        baseline.add(60 * 60_000, Decimal(61))  # 0분 버킷(1) 축출
+        assert baseline.per_minute_mean() == Decimal(2)  # (59×1 + 61) / 60
+
+    def test_same_minute_accumulates(self):
+        baseline = self.make(hours=1.0)
+        baseline.add(1000, Decimal(1))
+        baseline.add(2000, Decimal(3))  # 같은 분
+        assert len(baseline) == 1
+
+    def test_bootstrap_makes_ready(self):
+        baseline = self.make(hours=1.0)
+        baseline.bootstrap((minute * 60_000, Decimal(5)) for minute in range(60))
+        assert baseline.per_minute_mean() == Decimal(5)
