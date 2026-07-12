@@ -171,7 +171,8 @@ class AlertDispatcher:
         start = datetime.fromtimestamp(event.start_exchange_ms / 1000, _KST)
         end = datetime.fromtimestamp(event.end_exchange_ms / 1000, _KST)
         duration_min = max(1, round((event.end_exchange_ms - event.start_exchange_ms) / 60_000))
-        multiple_15m = event.total_qty / (event.baseline_per_minute * 15)
+        # 표시된 구간 분수와 같은 값으로 환산 — 메시지 안에서 자체 검산되도록
+        multiple = event.total_qty / (event.baseline_per_minute * duration_min)
         delta = event.buy_qty - event.sell_qty
         change_pct = (event.close_price - event.open_price) / event.open_price * 100
         return (
@@ -180,7 +181,7 @@ class AlertDispatcher:
             f"심볼: {self._symbol} (Binance Spot)\n"
             f"누적 {_fmt_approx(event.total_qty)} BTC "
             f"(매수 {_fmt_approx(event.buy_qty)} / 매도 {_fmt_approx(event.sell_qty)} · Δ {delta:+.1f}) — "
-            f"15분 기준선 대비 {multiple_15m:.1f}배\n"
+            f"평상시 {duration_min}분치의 {multiple:.1f}배\n"
             f"성격: {_D2_LABEL[event.label]} ({_delta_ratio_text(event.buy_qty, event.sell_qty)})\n"
             f"가격: {_fmt(event.open_price)} → {_fmt(event.close_price)} ({change_pct:+.2f}%) · "
             f"고 {_fmt(event.high_price)} / 저 {_fmt(event.low_price)}"

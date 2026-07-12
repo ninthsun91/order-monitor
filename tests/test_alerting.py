@@ -72,7 +72,7 @@ def onset():
 def summary():
     return D2BurstSummary(
         start_exchange_ms=1783816920000,  # 2026-07-12 09:42 KST
-        end_exchange_ms=1783817820000,  # 09:57 KST
+        end_exchange_ms=1783817520000,  # 09:52 KST (10분 — 고정 15분 환산과 구분되는 길이)
         total_qty=Decimal("1207"),
         buy_qty=Decimal("590"),
         sell_qty=Decimal("617"),
@@ -138,8 +138,9 @@ def test_d2_summary_format():
     dispatcher = AlertDispatcher(make_config(), sender, monotonic=FakeClock())
     dispatcher.dispatch(summary())
     text = sender.sent[0]
-    assert "볼륨 버스트 요약 (D2) — 15분 (KST 09:42~09:57)" in text
-    assert "누적 1,207 BTC (매수 590 / 매도 617 · Δ -27.0) — 15분 기준선 대비 9.6배" in text
+    assert "볼륨 버스트 요약 (D2) — 10분 (KST 09:42~09:52)" in text
+    # 1207 ÷ (분당 8.4 × 10분) ≈ 14.4 — 표시 구간과 같은 값으로 환산
+    assert "누적 1,207 BTC (매수 590 / 매도 617 · Δ -27.0) — 평상시 10분치의 14.4배" in text
     assert "성격: 양방향(흡수성 후보) (델타비 0.02)" in text
     assert "가격: 64,300 → 64,150 (-0.23%) · 고 64,320 / 저 64,020" in text
 
