@@ -5,7 +5,10 @@
   요구하므로(§5.4) 구독 확인은 연결 성립 통지로 충분하다
 - 재연결: 지수 백오프 1s→60s (PRD §5.3, §11.1). 연결이 `stable_connection_seconds`
   이상 유지됐으면 백오프 리셋 — 24h 강제 단절·서버 유지보수 후 즉시 재연결
-- keepalive: 서버 ping(20s 주기)에 대한 pong은 aiohttp autoping이 응답
+- keepalive: 서버 ping(20s 주기)에 대한 pong은 aiohttp autoping이 응답. 추가로
+  클라이언트 자체 ping(`heartbeat=20`)을 켠다 — 서버 CLOSE가 도달하지 않는 half-open
+  TCP에서 pong 미수신으로 receive()가 실패해 재연결 루프가 작동하게 (M1 검증 런 발견:
+  autoping만으로는 죽은 연결에서 무한 블록)
 - 연결/단절/재연결 대기는 구조화 로그로 남긴다 (DEVELOPMENT_PLAN M1 체크박스)
 - 파싱 실패는 로그 후 계속 — 지속 실패 시 이벤트가 흐르지 않아 staleness로 표면화
   (PRD §14 정규화 계층 감지)
@@ -27,6 +30,7 @@ from order_monitor.ingestion.events import Event, NormalizationError, parse_stre
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "wss://stream.binance.com:9443"
+CLIENT_HEARTBEAT_SECONDS = 20.0  # 서버 ping 주기와 동일
 
 _CLOSE_TYPES = (
     aiohttp.WSMsgType.CLOSE,
@@ -68,7 +72,7 @@ class BinanceWSClient:
     @contextlib.asynccontextmanager
     async def _default_connect(url: str):
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(url) as ws:
+            async with session.ws_connect(url, heartbeat=CLIENT_HEARTBEAT_SECONDS) as ws:
                 yield ws
 
     async def run(self) -> None:

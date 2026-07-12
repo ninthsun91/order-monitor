@@ -86,6 +86,40 @@ async def run_until(client, done: asyncio.Event, timeout=2.0):
 
 
 @pytest.mark.asyncio
+async def test_default_connect_enables_client_heartbeat(monkeypatch):
+    # half-open TCP 감지 (M1 검증 런 발견): 기본 연결은 클라이언트 ping을 켜야 한다
+    captured = {}
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def ws_connect(self, url, **kwargs):
+            captured.update(kwargs)
+
+            @contextlib.asynccontextmanager
+            async def cm():
+                yield FakeWS([])
+
+            return cm()
+
+    monkeypatch.setattr(aiohttp, "ClientSession", FakeSession)
+    recorder = Recorder()
+    client = BinanceWSClient(
+        "BTC/USDT",
+        on_event=recorder.on_event,
+        on_connected=recorder.on_connected,
+        on_disconnected=recorder.on_disconnected,
+    )
+    await client._run_connection()
+    assert captured["heartbeat"] == 20.0
+    assert recorder.connected == 1 and recorder.disconnected == 1
+
+
+@pytest.mark.asyncio
 async def test_dispatch_and_lifecycle_callbacks():
     recorder = Recorder()
     done = asyncio.Event()

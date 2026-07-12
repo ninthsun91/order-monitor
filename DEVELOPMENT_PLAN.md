@@ -115,7 +115,7 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 - **pyproject 의존성 정리**: ccxt 제거(탈락 확정), `aiohttp>=3.9` 직접 의존성 승격, dev에 `pytest-asyncio` 추가
 - **epoch 재시작 타이밍**: 라이브 연결 중 diff U/u 갭은 같은 이벤트 처리 내에서 즉시 새 epoch 시작 가능(세 스트림 모두 healthy + 직전 depth 스냅샷이 유효하므로). M2 디텍터는 EpochEnded에서 누적 리셋만 정확히 하면 됨
 - **wall_registry 시각 = wall-clock** (결정 기록 참고): D1(M2)의 `PERSIST_SECONDS` 판정은 이 필드(`first_seen_above_threshold`)와 비교하므로 wall-clock 기준으로 구현할 것
-- **(검증 런 발견, 미해결)** half-open TCP 무한 대기: staleness는 epoch만 종료하고 연결을 끊지 않으며, 클라이언트 자체 ping이 없어(`aiohttp` autoping은 서버 ping 응답 전용) 서버 CLOSE가 안 오면 `receive()` 무한 블록. 제안: `ws_connect(heartbeat=20)`(클라이언트 ping, pong 미수신 시 예외 → 기존 재연결 루프 작동). M5 워치독의 staleness 강제 재연결과 상호 보완 — 적용 시점 사용자 결정 대기
+- **(검증 런 발견 → 해결됨 2026-07-12)** half-open TCP 무한 대기: staleness는 epoch만 종료하고 연결을 끊지 않으며, 클라이언트 자체 ping이 없어(`aiohttp` autoping은 서버 ping 응답 전용) 서버 CLOSE가 안 오면 `receive()` 무한 블록이었음 → `ws_connect(heartbeat=20)` 적용(사용자 승인): pong 미수신 시 receive()가 실패해 기존 재연결 루프 작동. M5 워치독의 staleness 감시와 상호 보완(이중 방어)
 
 ## M2 — D1 + D2 + Telegram 발송
 
