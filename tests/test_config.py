@@ -132,3 +132,33 @@ def test_heartbeat_not_below_stale_raises(tmp_path):
 
     with pytest.raises(ConfigError, match="heartbeat_interval' must be less than"):
         load_config(bad_config)
+
+
+def test_d2_v13_keys_loaded():
+    config = load_config(EXAMPLE_CONFIG)
+    assert config.thresholds.vol_floor_btc == 30.0
+    assert config.thresholds.vol_multiplier == 10.0
+    assert config.thresholds.vol_baseline_hours == 24.0
+    assert config.thresholds.episode_exit_ratio == 0.5
+    assert config.thresholds.episode_merge_minutes == 10.0
+    assert config.alerts.send_d2_summary is True
+
+
+def test_delta_label_boundary_order_raises(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace("delta_balanced_ratio: 0.2", "delta_balanced_ratio: 0.6")
+    )
+
+    with pytest.raises(ConfigError, match="delta_balanced_ratio' must be less than"):
+        load_config(bad_config)
+
+
+def test_vol_multiplier_must_exceed_one(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace("vol_multiplier: 10", "vol_multiplier: 1")
+    )
+
+    with pytest.raises(ConfigError, match="vol_multiplier' must be > 1"):
+        load_config(bad_config)

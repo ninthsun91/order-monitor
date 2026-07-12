@@ -17,9 +17,14 @@ class ThresholdsConfig:
     persist_seconds: float
     exit_ratio: float
     fill_attribution: float
-    vol_threshold_btc: float
+    vol_floor_btc: float
+    vol_multiplier: float
+    vol_baseline_hours: float
     window_seconds: float
-    burst_cooldown_seconds: float
+    episode_exit_ratio: float
+    episode_merge_minutes: float
+    delta_directional_ratio: float
+    delta_balanced_ratio: float
     absorption_min_pct: float
     pierce_persist_snapshots: int
     iceberg_margin_btc: float
@@ -35,6 +40,7 @@ class ThresholdsConfig:
 class AlertsConfig:
     send_d1: bool
     send_d2: bool
+    send_d2_summary: bool
     send_d5_progress: bool
     bucket_size_usdt: float
     cooldown_seconds: float
@@ -119,6 +125,9 @@ _RATIO_FIELDS = (
     "realize_pct",
     "realize_pct_above",
     "progress_step_pct",
+    "episode_exit_ratio",
+    "delta_directional_ratio",
+    "delta_balanced_ratio",
 )
 
 
@@ -145,6 +154,14 @@ def _validate_invariants(config: AppConfig) -> None:
         raise ConfigError(
             "'wall_tracker.record_min_qty_btc' must be less than 'thresholds.size_threshold_btc'"
         )
+
+    if config.thresholds.delta_balanced_ratio >= config.thresholds.delta_directional_ratio:
+        raise ConfigError(
+            "'thresholds.delta_balanced_ratio' must be less than 'thresholds.delta_directional_ratio'"
+        )
+
+    if config.thresholds.vol_multiplier <= 1:
+        raise ConfigError(f"'thresholds.vol_multiplier' must be > 1, got {config.thresholds.vol_multiplier}")
 
     if config.watchdog.heartbeat_interval >= config.watchdog.stale_seconds:
         raise ConfigError(

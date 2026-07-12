@@ -5,9 +5,14 @@ thresholds:
   persist_seconds: 3             # D1 스푸핑 필터
   exit_ratio: 0.5
   fill_attribution: 0.7
-  vol_threshold_btc: 100         # D2
-  window_seconds: 60             # D2
-  burst_cooldown_seconds: 120
+  vol_floor_btc: 30              # D2 절대 하한 (PRD v1.3 — 기준선 붕괴 시 노이즈 방지)
+  vol_multiplier: 10             # D2 상대 임계 배수 (THR = max(floor, multiplier × 분당 기준선))
+  vol_baseline_hours: 24         # D2 기준선 창
+  window_seconds: 60             # D2 온셋 창
+  episode_exit_ratio: 0.5        # D2 에피소드 종료 히스테리시스
+  episode_merge_minutes: 10      # D2 에피소드 병합 창 (잠정 종료 후 이 시간 내 재점화 = 같은 에피소드)
+  delta_directional_ratio: 0.5   # D2 성격 라벨: |Δ|/V ≥ 이 값 → 방향성
+  delta_balanced_ratio: 0.2      # D2 성격 라벨: |Δ|/V ≤ 이 값 → 양방향(흡수성 후보)
   absorption_min_pct: 0.3        # D3
   pierce_persist_snapshots: 2    # D3 관통 보조 신호 지속성 (PRD §8 D3 v1.2)
   iceberg_margin_btc: 20         # D4 최소 인정 리필량 (PRD §8 D4 v1.2)
@@ -20,7 +25,8 @@ thresholds:
 
 alerts:
   send_d1: false
-  send_d2: true
+  send_d2: true                  # D2 에피소드 온셋 (PRD v1.3)
+  send_d2_summary: true          # D2 에피소드 요약 (PRD v1.3)
   send_d5_progress: true         # D5 진행률 알림 (PRD v1.2)
   bucket_size_usdt: 50
   cooldown_seconds: 300
