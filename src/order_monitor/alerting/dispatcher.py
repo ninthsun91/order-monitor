@@ -54,7 +54,7 @@ def _fmt_approx(value: Decimal) -> str:
 def _delta_ratio_text(buy: Decimal, sell: Decimal) -> str:
     total = buy + sell
     ratio = abs(buy - sell) / total if total else Decimal(0)
-    return f"|Δ|/V {ratio:.2f}"
+    return f"델타비 {ratio:.2f}"
 
 
 class AlertDeduper:
@@ -155,12 +155,14 @@ class AlertDispatcher:
         )
 
     def _format_d2_onset(self, event: D2BurstOnset) -> str:
-        multiple = event.window_qty / event.baseline_per_minute
+        delta = event.buy_qty - event.sell_qty
         return (
             f"⚡ 볼륨 버스트 시작 (D2)\n"
             f"심볼: {self._symbol} (Binance Spot)\n"
-            f"{self._thresholds.window_seconds:g}초 체결 {_fmt(event.window_qty)} BTC — "
-            f"기준선(분당 {_fmt_approx(event.baseline_per_minute)}) 대비 {multiple:.1f}배\n"
+            f"{self._thresholds.window_seconds:g}초 체결 {_fmt_approx(event.window_qty)} BTC "
+            f"(매수 {_fmt_approx(event.buy_qty)} / 매도 {_fmt_approx(event.sell_qty)} · Δ {delta:+.1f})\n"
+            f"기준선: 분당 {_fmt_approx(event.baseline_per_minute)} BTC "
+            f"({self._thresholds.vol_baseline_hours:g}h 평균 체결량)\n"
             f"성격: {_D2_LABEL[event.label]} ({_delta_ratio_text(event.buy_qty, event.sell_qty)}) · "
             f"현재가 {_fmt(event.price)}"
         )

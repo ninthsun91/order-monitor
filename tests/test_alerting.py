@@ -128,8 +128,9 @@ def test_message_formats():
     assert "대형 벽 출현 (D1)" in sender.sent[0]
     assert "61,000 (bid) · 표시 1,200 BTC" in sender.sent[0]
     assert "볼륨 버스트 시작 (D2)" in sender.sent[1]
-    assert "60초 체결 152 BTC — 기준선(분당 8.4) 대비 18.1배" in sender.sent[1]
-    assert "성격: 방향성 매도 (|Δ|/V 0.61) · 현재가 64,120" in sender.sent[1]
+    assert "60초 체결 152 BTC (매수 30 / 매도 122 · Δ -92.0)" in sender.sent[1]
+    assert "기준선: 분당 8.4 BTC (24h 평균 체결량)" in sender.sent[1]
+    assert "성격: 방향성 매도 (델타비 0.61) · 현재가 64,120" in sender.sent[1]
 
 
 def test_d2_summary_format():
@@ -139,7 +140,7 @@ def test_d2_summary_format():
     text = sender.sent[0]
     assert "볼륨 버스트 요약 (D2) — 15분 (KST 09:42~09:57)" in text
     assert "누적 1,207 BTC (매수 590 / 매도 617 · Δ -27.0) — 15분 기준선 대비 9.6배" in text
-    assert "성격: 양방향(흡수성 후보)" in text
+    assert "성격: 양방향(흡수성 후보) (델타비 0.02)" in text
     assert "가격: 64,300 → 64,150 (-0.23%) · 고 64,320 / 저 64,020" in text
 
 
