@@ -12,7 +12,7 @@
 | M0 | 프로젝트 스캐폴딩 | ✅ 완료 | 2026-07-11 |
 | M0.5 | PRD v1.1(벽 레지스트리) 반영 — 기존 스캐폴딩 정합화 | ✅ 완료 | 2026-07-11 |
 | M1 | Ingestion + 상태 모델 + 로그 | ✅ 완료 | 2026-07-12 |
-| M2 | D1 + D2 + Telegram 알림 | ⬜ 미착수 | |
+| M2 | D1 + D2 + Telegram 알림 | 🟠 검증 대기 | |
 | M3 | 레벨별 체결 집계 + D3 + D4 | ⬜ 미착수 | |
 | M4 | D5 상태기계 + 확정 알림 | ⬜ 미착수 | |
 | M5 | Watchdog + 배포 | ⬜ 미착수 | |
@@ -119,20 +119,27 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 ## M2 — D1 + D2 + Telegram 발송
 
-- [ ] D1 APPEARED: `SIZE_THRESHOLD` + `PERSIST_SECONDS` 지속 필터 + 레벨당 1회 발화 + `unconfirmed` 레벨 발화 억제 (PRD §8 D1, §12.1 규칙 2)
-- [ ] D1 REMOVED: `EXIT_RATIO` 하락 시 `FILLED` / `PULLED` 판정 (`FILL_ATTRIBUTION`)
-- [ ] D2 볼륨 버스트: 방향 분리 집계, `BURST_COOLDOWN` (PRD §8 D2 — 합산 모드는 v1.2 검수(13)에서 삭제)
-- [ ] Telegram 발송기: 비동기 큐, 초당 상한, 실패 시 백오프 재시도 (PRD §9.2, §11.1)
-- [ ] 토큰은 `TELEGRAM_BOT_TOKEN` 환경변수로만 주입
-- [ ] dedup **(v1.2 — D1/D2 전용)**: `(detector, side, price_bucket)` 키 + `ALERT_COOLDOWN` (D5는 intent 기반 별도 — PRD §9.2, M4에서 구현)
-- [ ] 알림 on/off 설정 반영 (`send_d1` 기본 off, `send_d2` 기본 on)
-- [ ] 단위 테스트: 지속시간 필터(스푸핑 배제), FILLED/PULLED 분기, dedup/쿨다운
+- [x] D1 APPEARED: `SIZE_THRESHOLD` + `PERSIST_SECONDS` 지속 필터 + 레벨당 1회 발화 + `unconfirmed` 레벨 발화 억제 (PRD §8 D1, §12.1 규칙 2) — `detectors/d1.py` (지속 타이머는 `first_seen_above_threshold` 기준 wall-clock — M1 결정 기록에 예고된 대로. 발화 게이트는 diff 이벤트 + 1s 주기 틱 양쪽)
+- [x] D1 REMOVED: `EXIT_RATIO` 하락 시 `FILLED` / `PULLED` 판정 (`FILL_ATTRIBUTION`) — 레지스트리 소멸(tombstone/하한 미만) 경로 포함. 지속 필터 미달 후보는 `D1Suppressed` 로그 전용 이벤트로 기록 (검증 방법 (2)의 근거 데이터)
+- [x] D2 볼륨 버스트: 방향 분리 집계, `BURST_COOLDOWN` (PRD §8 D2 — 합산 모드는 v1.2 검수(13)에서 삭제) — `detectors/d2.py` (방향당 쿨다운, monotonic)
+- [x] Telegram 발송기: 비동기 큐, 초당 상한, 실패 시 백오프 재시도 (PRD §9.2, §11.1) — `alerting/telegram.py` (초당 1건·재시도 5회 후 드롭은 코드 상수 — §10 config 키 전수 고정. 로그에서 토큰 redact)
+- [x] 토큰은 `TELEGRAM_BOT_TOKEN` 환경변수로만 주입 — main에서 필수 검증, 없으면 기동 거부 (알림 없는 조용한 실행 방지)
+- [x] dedup **(v1.2 — D1/D2 전용)**: `(detector, side, price_bucket)` 키 + `ALERT_COOLDOWN` (D5는 intent 기반 별도 — PRD §9.2, M4에서 구현) — `alerting/dispatcher.py` (D2는 가격 없음 — 버킷 None, 방향당 키)
+- [x] 알림 on/off 설정 반영 (`send_d1` 기본 off, `send_d2` 기본 on)
+- [x] 단위 테스트: 지속시간 필터(스푸핑 배제), FILLED/PULLED 분기, dedup/쿨다운 — `tests/test_d1.py`(14) `test_d2.py`(4) `test_alerting.py`(11) + 서비스 배선 4건 (누적 127 passed)
 
 **완료 기준 (PRD)**: 실제 알림 수신, 스푸핑 필터 동작 확인.
 **검증 방법**: (1) 실계정으로 D2 알림 1건 이상 수신 (2) 로그에서 PERSIST 미달로 발화 억제된 레벨 사례 확인.
 
 검증 기록:
--
+- 2026-07-12 25s 스모크 런 (구현 완료 직후, 더미 토큰): 연결 → epoch 1 시작 → 벽 1건 기록, 에러/경고 0건. 실토큰 D2 알림 수신 + `D1Suppressed` 사례 확인은 **미실시** — 완료 기준 검증 런 필요 (실계정 `TELEGRAM_BOT_TOKEN` + `telegram.chat_id` 설정 후 실행)
+
+### M2 구현 노트 (2026-07-12)
+
+- **D1 데드밴드 재발화 안 함 (PRD §8 D1 조건 3 해석)**: 활성(APPEARED 발화) latch는 REMOVED까지 유지 — exit(500)~임계(1000) 데드밴드로 내려갔다 회복해도 재발화하지 않는다. 조건 3의 "임계 밑으로 내려갔다 다시 올라오면 리셋"은 REMOVED 이후의 재출현 재계측으로 해석: 데드밴드 내 재발화는 같은 벽에 중복 인텐트(M4 D5)를 만들고 `EXIT_RATIO` 히스테리시스 설계 의도와 충돌. **사용자 리뷰 대상** — 다르게 읽는다면 detectors/d1.py의 활성 분기만 수정하면 됨
+- **epoch 종료 시 D1 리셋**: 활성·후보 전부 폐기, 보류 중 소멸은 REMOVED 무판정 (aggTrade 공백 중 체결 귀속이 얼어 FILLED/PULLED 오판 — §5.4). 새 epoch에서 임계 이상 벽은 다시 APPEARED부터 (타이머는 레지스트리 필드가 보존하므로 재개 직후 빠르게 재발화 — M4에서 INTERRUPTED→재등록 의미와 정합). D2 쿨다운·dedup 쿨다운은 판정 누적이 아닌 스팸 억제기라 epoch를 넘겨 유지
+- **`telegram.chat_id`는 str 유지** (M0 노트의 int→str 허용 여부 종결): 스키마 완화 없이 현행 유지 — 그룹 chat_id는 YAML에서 `"-100..."`처럼 따옴표 필수. 로더의 "조용한 강변환 없음" 원칙 유지가 함정 하나보다 우선
+- **알림 실패 시 5회 재시도 후 드롭**: D1/D2는 시효성 신호라 무한 재시도 무가치. D5 종국 알림의 유실 방지는 M4 `alerts_outbox` 소관 (PRD §9.4 적용 범위 한정과 일치)
 
 ## M3 — 레벨별 체결 집계 + D3 + D4
 
@@ -222,6 +229,8 @@ PRD와 다르게 결정했거나 PRD가 열어둔 것을 확정한 사항. 날�
 | 2026-07-11 | **wall_registry 시각 필드는 wall-clock(epoch 초)** — §11.1 "지속시간 타이머 = monotonic" 원칙의 의도된 예외 | `first_seen_above_threshold`(D1 스푸핑 타이머 기준)가 §12.1 규칙 2에 의해 SQLite로 재시작을 넘어 보존되어야 하는데 monotonic은 부팅 기준이라 재시작 간 비교 불가 → 양립 불가능한 두 요구 중 §12.1이 우선. 시스템 시계 점프 시 3s 지속 필터가 왜곡될 수 있는 트레이드오프 수용 (NTP 운영 전제) |
 | 2026-07-11 | SQLite 경로는 config가 아닌 CLI `--db-file` 인자 | PRD §10(v1.2 검수 4회차)이 config 키 전수를 명세 역추적으로 고정했고 영속화 경로 키는 없음. 로더의 엄격 스키마(미지 키 거부)를 건드리지 않고 `--log-file`과 동일 관례로 처리 |
 | 2026-07-11 | **M1 검증 런 = 8h + 수동 단절 1회** (PRD §13 완료 기준 "24h"에서 단축, 사용자 승인) | 24h라는 숫자의 고유 목적은 Binance 24h 강제 단절→자동 재연결 실증 하나뿐 — 메모리 평탄·수집 안정성은 8h로 충분(trade_window는 60s 창, 레지스트리 증가 완만). 재연결 경로는 런 중간 네트워크 2~3분 차단으로 대체 실증(30s 미만 차단은 TCP가 살아남아 단절 경로를 안 밟을 수 있음), 24h 강제 단절 자체는 M5 7일 무인 운영에서 매일 자연 발생하므로 그때 커버 |
+| 2026-07-12 | **알림 메시지 한국어 고정** (오픈 퀘스천 #4 종결) — 템플릿화 없이 `alerting/dispatcher.py`에 포맷 함수로 직접 구현 | 단일 사용자·한국어 수신 전제에서 템플릿 계층은 요구 없는 유연성(추측성 추상화). PRD §9.3 예시도 한국어. 다국어 필요가 실제로 생기면 그때 포맷 함수만 교체하면 됨 |
+| 2026-07-12 | **D1 활성 latch는 REMOVED까지 유지** — exit~임계 데드밴드 회복 시 재발화 안 함 (PRD §8 D1 조건 3의 "리셋"을 REMOVED 이후로 해석) | 데드밴드 내 재발화는 같은 벽에 중복 인텐트를 만들고 EXIT_RATIO 히스테리시스 의도와 충돌. M2 구현 노트 참고 — 사용자 리뷰 대상 |
 | 2026-07-11 | 벽 레지스트리 SQLite 영속화 + unconfirmed 플래그 + TTL 14일 — "인메모리 상태 미복원" 원칙(PRD §12)의 유일한 예외 | 원거리 벽 시야는 청취 누적으로만 형성되므로 재시작 초기화 비용이 큼. 신뢰도 하락은 **청취 공백**(재시작·재연결 갭)에서만 발생(연결 중 무이벤트 = 무변화 = 값 유효) → 공백 시 전체 unconfirmed 마킹, 가격별 새 이벤트(절대 잔량)로 자동 해제, 능동 재검증 API는 부재. unconfirmed 중 APPEARED 발화 억제 + `first_seen_at` 보존(스푸핑 필터 타이머 유지). TTL 14일(설정값, 사용자 경험상 2주 초과 지속 벽 드묾)은 신뢰도가 아닌 저장 위생 규칙 — `events` 이력은 보존해 M6 튜닝 데이터 유지. **(주)** 이후 PRD v1.2 (5)에서 TTL은 unconfirmed 전용·기산점 `unconfirmed_since`·기본 7일로 개정됨 |
 
 ## 오픈 퀘스천 트래킹 (PRD §15)
@@ -231,5 +240,5 @@ PRD와 다르게 결정했거나 PRD가 열어둔 것을 확정한 사항. 날�
 | 1 | `SIZE_THRESHOLD` 초기값 (BTC 수량 vs USDT 노셔널) | M1 데이터 수집 후 / 최종 M6 | ✅ 확정 | BTC 수량 기준, **1000 BTC** (2026-07-11, 사용자 시장 판단 — 전달력 있는 유동성 기준). 기록 하한은 별도 100 BTC(`record_min_qty_btc`). M6에서 실데이터 재검토 여지만 유지 |
 | 2 | 케이스 2 "상위 구간" 범위 제한 필요 여부 | M4 설계 시 | ⬜ 미결 | |
 | 3 | 매도 의도(ask 벽) 대칭 지원 v1 포함 여부 (PRD는 포함 권장) | M0~M1 설계 시 | ✅ 확정 | v1 포함 — 벽 레지스트리 설계 논의(2026-07-11)에서 사용자가 ask/bid 양측 추적을 전제로 함. 구현 비용도 낮음 |
-| 4 | 알림 언어/포맷: 한국어 고정 vs 템플릿화 | M2 착수 시 | ⬜ 미결 | |
+| 4 | 알림 언어/포맷: 한국어 고정 vs 템플릿화 | M2 착수 시 | ✅ 확정 | 한국어 고정 (2026-07-12, 결정 기록 참고 — 템플릿화는 요구 없는 유연성으로 기각) |
 | 5 | Bookmap 대조 기록 방식 (스크린샷 vs 녹화) | M3 착수 시 | ⬜ 미결 | |
