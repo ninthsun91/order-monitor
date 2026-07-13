@@ -14,7 +14,7 @@
 | M1 | Ingestion + 상태 모델 + 로그 | ✅ 완료 | 2026-07-12 |
 | M2 | D1 + D2 + Telegram 알림 | ✅ 완료 | 2026-07-12 |
 | M3 | 레벨별 체결 집계 + D3 + D4 | ✅ 완료 | 2026-07-13 |
-| M4 | D5 상태기계 + 확정 알림 | ⬜ 미착수 | |
+| M4 | D5 상태기계 + 확정 알림 | 🟠 검증 대기 | 2026-07-14 (자동화 완료, 실전 확인 미실시) |
 | M5 | Watchdog + 배포 | ⬜ 미착수 | |
 | M6 | SQLite 영속화 + 임계치 튜닝 | ⬜ 미착수 | |
 
@@ -187,26 +187,38 @@ PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 �
 
 ## M4 — D5 상태기계 + 확정 알림
 
-- [ ] `INTENT_REGISTERED` 등록 (D1 APPEARED 입력, S = 발화 시점 `last_qty` 고정 — 이후 크기 변화 미반영, PRD §8 D5 v1.2)
-- [ ] 전이 1: 가격 도달 + 체결 누적 ≥ S×`REALIZE_PCT` → `EXECUTION_CONFIRMED` (케이스 1 — "해당 레벨 체결" 확인이지 원 표시 주문의 체결 확인 아님, PRD §8 D5 판정 의미)
-- [ ] 전이 2: PULLED → 케이스 2 누적을 **먼저** 평가(충족 시 `EXECUTION_INFERRED_ABOVE` 우선), 미충족 시 `INTENT_WITHDRAWN`; FILLED 귀속 + 실현률 미달은 `PARTIALLY_EXECUTED` (로그만 — 전 종국 레코드에 실현률 필드, PRD §8 D5 v1.2)
-- [ ] 전이 3: 상위 구간 D4 누적 ≥ S×`REALIZE_PCT_ABOVE` → `EXECUTION_INFERRED_ABOVE` (케이스 2, 리필 확인분만 합산 — PRD §8 D5 집계 방식. v1.2에서 `_CONFIRMED_ABOVE`에서 개명: 귀속 불가로 "추정" 등급)
-- [ ] 레벨 소멸(REMOVED/tombstone/하한 미달) 시 D5 즉시 종국 평가 — TTL 대기 없음, 소멸 원인 4분류 + 동시 발생 우선순위(CONFIRMED > INFERRED_ABOVE > PARTIALLY_EXECUTED > WITHDRAWN, epoch 종료는 무조건 INTERRUPTED) (PRD §8 D5 v1.2)
-- [ ] `INTENT_TTL` 만료 → `INTENT_EXPIRED` (로그만)
-- [ ] **(v1.2)** epoch 종료 시 활성 intent `INTERRUPTED` 마킹 + D3/D4 누적 리셋 (PRD §5.4, §12)
-- [ ] `intents` 개수/시간 상한 (메모리 바운드)
-- [ ] 확정 알림 포맷: 실현률 %, 등록→확정 소요시간 포함 (PRD §9.3), 케이스 2는 "추정" 명시
-- [ ] **(v1.2)** D5 알림 dedup: 종국 `(intent_id, terminal_state)` / 진행률 `(intent_id, 계열, 경계)` — 시간 쿨다운 미적용 (PRD §9.2)
-- [ ] **(v1.2)** `alerts_outbox`: D5 종국 알림 선기록→발송→sent 마킹, 재시작 시 미발송 재전송 (멱등 키 중복 차단, 원 이벤트 시각 표기 — PRD §9.4)
-- [ ] 단위 테스트: 상태 전이 전 경로 (확정 1/2, 부분 체결, 철회, 만료, INTERRUPTED) + 동시 발생 우선순위 케이스
-- [ ] **(v1.2)** D5 replay 테스트: M3 픽스처 확장 — 재연결·순서 역전·누락 시나리오에서 상태기계 결정성 검증 (PRD §13 — M4 완료 기준)
-- [ ] **(코어 전이 테스트 통과 후)** D5 진행률 알림: `progress_step_pct`(0.2) 경계당 1회, 계열(케이스 1/2)별 독립 커서, dedup 키에 경계값 포함해 쿨다운 우회 (PRD §8 D5 진행률 알림, §9.2 예외)
+- [x] `INTENT_REGISTERED` 등록 (D1 APPEARED 입력, S = 발화 시점 `last_qty` 고정 — 이후 크기 변화 미반영, PRD §8 D5 v1.2) — `detectors/d5.py` `on_d1_appeared`
+- [x] 전이 1: 가격 도달 + 체결 누적 ≥ S×`REALIZE_PCT` → `EXECUTION_CONFIRMED` (케이스 1 — "해당 레벨 체결" 확인이지 원 표시 주문의 체결 확인 아님, PRD §8 D5 판정 의미). **D3와 달리 관통 배제 없음** — 관통 여부와 무관하게 그만큼 체결됐다는 사실 자체가 판정 대상(결정 기록 참고)
+- [x] 전이 2: PULLED → 케이스 2 누적을 **먼저** 평가(충족 시 `EXECUTION_INFERRED_ABOVE` 우선), 미충족 시 `INTENT_WITHDRAWN`; FILLED 귀속 + 실현률 미달은 `PARTIALLY_EXECUTED` (로그만 — 전 종국 레코드에 실현률 필드, PRD §8 D5 v1.2) — `on_d1_removed`
+- [x] 전이 3: 상위 구간 D4 누적 ≥ S×`REALIZE_PCT_ABOVE` → `EXECUTION_INFERRED_ABOVE` (케이스 2, 리필 확인분만 합산 — PRD §8 D5 집계 방식). 상위 구간 = 의도 레벨과 같은 side best(mid 아님, 결정 기록 참고) 사이 — D4에 lifetime(episode 비종속) 리필 누적 신설(`sum_lifetime_refill_above`)
+- [x] 레벨 소멸(REMOVED/tombstone/하한 미달) 시 D5 즉시 종국 평가 — TTL 대기 없음, 소멸 원인 4분류 + 동시 발생 우선순위(CONFIRMED > INFERRED_ABOVE > PARTIALLY_EXECUTED > WITHDRAWN, epoch 종료는 무조건 INTERRUPTED) (PRD §8 D5 v1.2)
+- [x] `INTENT_TTL` 만료 → `INTENT_EXPIRED` (로그만) — `evaluate()`
+- [x] **(v1.2)** epoch 종료 시 활성 intent `INTERRUPTED` 마킹 + D3/D4 누적 리셋 (PRD §5.4, §12) — `d5.reset()`이 이벤트를 반환(D1~D4의 void reset()과 다름). **배선 순서 위험**: `d5.reset()`은 반드시 `d4.reset()`보다 먼저 — INTERRUPTED의 `above_realized_rate`가 D4 lifetime 리필에 의존(service.py 모듈 docstring에 명시)
+- [x] `intents` 개수/시간 상한 (메모리 바운드) — TTL이 기본 상한, 방어적 활성 인텐트 수 상한(`MAX_ACTIVE_INTENTS=1000`, 코드 상수)
+- [x] 확정 알림 포맷: 실현률 %, 등록→확정 소요시간 포함 (PRD §9.3), 케이스 2는 "추정" 명시 — PRD §9.3 템플릿 그대로 + 발생 시각(KST) 한 줄 추가(§9.4 "지연 발송임을 수신자가 알 수 있게")
+- [x] **(v1.2)** D5 알림 dedup: 종국 `(intent_id, terminal_state)` / 진행률 `(intent_id, 계열, 경계)` — 시간 쿨다운 미적용 (PRD §9.2) — 순수 멱등 셋(`AlertDispatcher._d5_sent`), 기존 쿨다운 기반 `AlertDeduper`와 별개
+- [x] **(v1.2)** `alerts_outbox`: D5 종국 알림 선기록→발송→sent 마킹, 재시작 시 미발송 재전송 (멱등 키 중복 차단, 원 이벤트 시각 표기 — PRD §9.4) — `persistence/alerts_outbox.py`, `TelegramSender.enqueue(on_sent=...)` 콜백으로 발송 확인. 멱등 키는 intent_id가 아니라 `(side,price,terminal_state,recorded_at)`(서비스 wall-clock) — 근거는 결정 기록
+- [x] 단위 테스트: 상태 전이 전 경로 (확정 1/2, 부분 체결, 철회, 만료, INTERRUPTED) + 동시 발생 우선순위 케이스 — `tests/test_d5.py` (21 tests)
+- [x] **(v1.2)** D5 replay 테스트: M3 픽스처 확장 — 재연결·순서 역전·누락 시나리오에서 상태기계 결정성 검증 (PRD §13 — M4 완료 기준) — 재연결·diff갭 픽스처에 INTERRUPTED 결정성 단언 추가(`tests/test_replay.py`). 순서 역전 픽스처는 D1 비적격 벽(500<1000)이라 D5 관여 없음 — 케이스1/2/TTL은 `test_service.py` 파이프라인 테스트로 커버(신규 replay 픽스처 불필요 판단, 사용자 확인 없이 개발자 판단)
+- [x] **(코어 전이 테스트 통과 후)** D5 진행률 알림: `progress_step_pct`(0.2) 경계당 1회, 계열(케이스 1/2)별 독립 커서, dedup 키에 경계값 포함해 쿨다운 우회 (PRD §8 D5 진행률 알림, §9.2 예외) — `evaluate()`의 `_progress_events`, 종국 임계 미만 경계만(0.6 기본값 기준 실효 0.2/0.4)
 
 **완료 기준 (PRD)**: 케이스 1/2 알림 각 1건 이상 실전 확인.
 **검증 방법**: 실전 수신한 알림의 근거 이벤트를 로그에서 역추적해 타당성 확인.
 
 검증 기록:
--
+- **2026-07-14 자동화 완료** (이번 세션 완료 기준 — 사용자 확정, 실전 알림 확인은 아래 참고): 단위 테스트(`test_d5.py` 21, `test_d4.py` lifetime 추가 6, `test_alerts_outbox.py` 7, `test_alerting.py` D5 배선 12) + service 파이프라인 테스트(케이스1 확정+outbox 기록, 케이스2 추정, TTL 만료, epoch 종료 INTERRUPTED, 재시작 재전송 — `test_service.py`) + replay 결정성(재연결·diff갭 시나리오 INTERRUPTED, 실캡처 60s 인텐트 등록) 전부 통과. 전체 271 tests passed. 30s 스모크 런(더미 토큰): epoch 시작 → 실제 D1Appeared(1361.66 BTC 벽) 발화 → Telegram 404(더미 토큰) 5회 재시도 후 정상 드롭 로그, 크래시 없음
+- **실전 케이스1/2 알림 확인 — 미실시, 후속 필요**: PRD 완료 기준의 "실전 확인"은 1000+ BTC 벽이 실제로 60%+ 체결/상위 리필되는 예측 불가능한 시장 이벤트를 요구(M3 60s 실캡처에서도 벽 1개만 관측되는 수준의 희소 사건). M2도 동일 사유로 구현 완료 후 별도 세션(8h 검증 런)에서 진행한 전례를 따라 이번 세션 범위에서 제외(사용자 확정 2026-07-14). 실토큰 상시 운영 중 로그 관찰로 확인되는 대로 이 기록에 추기
+
+### M4 구현 노트 (2026-07-14)
+
+- **D5는 D3/접촉 episode에 의존하지 않음**: 케이스1은 D1/D3가 이미 쓰는 `cum_traded_lookup` 콜백만 사용 — 그 가격에 체결이 있었다는 사실 자체가 "가격 도달"의 증거이므로 별도 판정 불필요. D3의 "관통 없이 버텼는가"와 D5 케이스1의 "실제로 그만큼 체결됐는가"는 별개 질문 — 관통 후에도 케이스1은 발화할 수 있다(의도적).
+- **D4 lifetime 리필과 기존 episode-scoped `_acc`는 같은 인정 리필 델타를 이중 기록**하지만 리셋 시점이 다르다(전자는 epoch 종료만, 후자는 episode 종료도) — 데이터 중복이 아니라 서로 다른 소비자(D4 자신의 발화 판정 vs D5 케이스2 lifetime 합산)를 위한 병행 관측.
+- **"상위 구간" 상한은 같은 side의 best 가격**(BUY 인텐트=best_bid) — mid 아님. bid/ask 레벨은 정의상 각자의 best를 넘어 존재할 수 없어 mid를 쓰든 same-side best를 쓰든 그 사이엔 데이터가 없어 결과가 같다(위험 없는 단순화).
+- **`D5Detector.reset()`은 이벤트를 반환** — D1~D4의 `reset() -> None`과 다른 유일한 시그니처. epoch 종료 시 INTERRUPTED 자체가 유효한 종국 레코드이기 때문. 호출자(service)는 `for event in d5.reset(): self._emit(event)` 형태로 소비해야 한다.
+- **service의 `EpochEnded` 처리 순서가 정합성을 가름**: `d5.reset()`을 `d4.reset()`보다 반드시 먼저 호출 — INTERRUPTED의 `above_realized_rate`가 D4 lifetime 리필 조회에 의존하는데 `d4.reset()`이 먼저 돌면 그 데이터가 이미 지워진다(M3의 D3 vs D1 REMOVED 순서 교훈과 같은 종류).
+- **outbox 멱등 키는 `(side, price, terminal_state, recorded_at)`** — `intent_id`(D5Detector 내부 프로세스 카운터)를 쓰지 않은 이유: 재시작마다 0부터 다시 시작해 다른 인텐트가 우연히 같은 값을 얻으면 `INSERT OR IGNORE`가 진짜 알림을 조용히 삼킬 수 있음. `recorded_at`은 서비스가 outbox 기록 시점에 wall-clock으로 찍는다(D5Detector 자체는 monotonic만 다룸 — TTL/소요시간 계산용).
+- **`AlertDispatcher`에 `set_outbox()` setter가 있는 이유**: outbox는 `db_path` 확정 후 `startup()`에서 열리는데(`WallStore`와 같은 지연 오픈 패턴), dispatcher는 생성자에서 이미 만들어지므로 사후 주입이 필요하다.
+- **`_cum_traded_at_level`/`_refill_above_lookup` 파이프라인 테스트 함정**: 실제 top-20 depth 스냅샷으로 해당 가격이 `LevelTracker`에 먼저 진입해야 그 뒤의 체결이 `cum_traded_at_level`에 반영된다(레벨 미존재 시 조용히 0) — D3 파이프라인 테스트(M3)와 동일한 패턴, D5 케이스1 파이프라인 테스트에서도 재확인.
 
 ## M5 — Watchdog + systemd + 배포
 
@@ -261,6 +273,17 @@ PRD와 다르게 결정했거나 PRD가 열어둔 것을 확정한 사항. 날�
 | 2026-07-12 | **D1 활성 latch는 REMOVED까지 유지** — exit~임계 데드밴드 회복 시 재발화 안 함 (PRD §8 D1 조건 3의 "리셋"을 REMOVED 이후로 해석) | 데드밴드 내 재발화는 같은 벽에 중복 인텐트를 만들고 EXIT_RATIO 히스테리시스 의도와 충돌. M2 구현 노트 참고 — 사용자 리뷰 대상 |
 | 2026-07-12 | **D2 v1.3 전면 개편 — 에피소드형 상대 임계** (PRD v1.3, 사용자 승인 플랜): 24h 이동 기준선 × k=10 + 하한 30 BTC, 총 볼륨 트리거 + 델타비 라벨(0.5/0.2), 온셋/요약 2단, 병합 10분, D2 시간 쿨다운 폐지, REST 워밍업 부트스트랩 | 사용자 요구 3건(고정 임계의 유동성 비적응 / 15m 기준의 최대 15분 지연 / 델타·흡수 스파이크 미구분). 파라미터는 백테스트로 확정: 6/29~7/12 1분봉에서 사용자 지정 9개 구간(7/12 09:45 지속형, 7/9 21:15 스파이크, 7/6 델타 2건, 7/1~7/2 흡수+델타 연쇄, 7/1 10:00·6/30 22:30 흡수) 전부 포착 + 7.3 에피소드/일 (k=8: 11/일, k=12: 6/일 — 일부 에피소드 축소). 업계 방식(RVOL 상대 볼륨, z-score/EWMA 적응 임계, CVD 델타 분류) 조사 반영. 시간대별 기준선(RVOL-TOD, 일중 계절성 실측 2.8x)은 스파이크 배수(9~28x) 대비 작아 v1에서 보류 — M6 재검토. 백테스트 도구는 `scripts/backtest_d2.py`로 보존 |
 | 2026-07-13 | **호가벽 리포트 개정** (실운영 D+1 피드백, 사용자 요청 4건): ① 발송을 기동 기준 간격 → 벽시계 정시 경계(epoch 초의 interval 배수, 60분 = 매시 정각)로 변경 ② 용어 "물량벽" → 트레이더 통용어 "호가벽"(섹션은 매도벽(저항)/매수벽(지지)) ③ 범례 푸터(`🧱 ≥1,000 BTC · ? = 미확인`) 제거 ④ 헤더의 "추적 N개" 제거. 푸터 제거에 따라 unconfirmed `?` 접미도 제거(범례 없는 기호는 소음) — 반대편 unconfirmed 잔재 표시 제외 필터는 유지 | 2026-07-12 결정의 표시 규칙 일부를 대체. 정시 정렬은 차트 정각 캔들과 대조하기 위함 (KST가 정수 시간 오프셋이라 UTC epoch 배수 = KST 정각) |
+| 2026-07-14 | **D5 케이스1은 D3와 달리 관통 배제 조건 없음** (PRD §8 D5, M4 착수 시 확정) — `cum_traded_at_level`만으로 판정, ContactEpisodeTracker 미사용 | 케이스1의 질문은 "실제로 그만큼 체결됐는가"이지 "관통 없이 버텼는가"(D3)가 아님. 그 가격에 체결이 있었다는 사실 자체가 가격 도달의 증거이므로 접촉 판정이 불필요. PRD 원문에도 케이스1엔 관통 배제 조건이 없음 |
+| 2026-07-14 | **D4에 lifetime(episode 비종속) 리필 누적 병행 추가** — `sum_lifetime_refill_above(side, intent_price, current_price)` | D5 케이스2는 인텐트 등록부터 최대 30분(TTL)에 걸쳐 여러 접촉 episode·여러 레벨을 넘나드는 누적이 필요한데, 기존 `_acc`는 episode 종료마다 리셋돼 범위가 안 맞음. episode 종료 신호는 그대로 유지(D4 자신의 발화 판정용), lifetime은 epoch 종료에만 리셋 |
+| 2026-07-14 | **"상위 구간"의 현재가 = 같은 side의 best 가격**(BUY 인텐트=best_bid, SELL 인텐트=best_ask) — mid 아님 | bid 레벨은 정의상 best_bid 위에, ask 레벨은 best_ask 아래에 존재할 수 없어, mid를 쓰든 same-side best를 쓰든 그 사이 구간엔 애초에 데이터가 없어 결과가 동일 — 위험 없는 단순화 |
+| 2026-07-14 | **6개 종국 상태를 단일 `D5Terminal{state}`로 통합** (D1처럼 필드가 다른 별도 클래스가 아님) | PRD가 "모든 종국 레코드에는 레벨 실현률과 상위 구간 추정 실현률을 함께 남긴다"고 명시 — 6개 상태의 필드셋이 동일해 별도 클래스는 중복 |
+| 2026-07-14 | **`D5Detector.reset()`은 이벤트를 반환** (D1~D4의 `reset() -> None`과 다름) | epoch 종료 시 INTERRUPTED 자체가 로그에 남아야 하는 유효 레코드이기 때문 — void reset()으로는 이 정보가 유실됨 |
+| 2026-07-14 | **EpochEnded 처리에서 `d5.reset()`을 `d4.reset()`보다 먼저 호출** (service.py 모듈 docstring 명시) | INTERRUPTED 레코드의 `above_realized_rate`가 D4의 lifetime 리필 조회에 의존 — `d4.reset()`이 먼저 돌면 그 데이터가 이미 지워져 항상 0으로 남는다. M3의 "D3 확정 판정은 D1 REMOVED 라우팅 전에" 교훈과 같은 종류 |
+| 2026-07-14 | **D5의 시간축은 `monotonic`** (등록 시각·TTL·진행률/종국 소요시간) | 인텐트는 재시작을 넘어 살아남지 않음(wall_registry만 예외, PRD §12) — wall-clock 영속성이 불필요하고 D2와 같은 주입 패턴으로 replay 결정성도 정합 |
+| 2026-07-14 | **Telegram `enqueue()`에 `on_sent` 발송 확인 콜백 추가** — 성공(status 200) 시에만 호출, 재시도 소진 실패 시 미호출 | outbox가 sent 마킹 여부를 이 신호로만 판단하므로, 실패 시 미발송 상태 유지가 재시작 재전송의 전제. D1/D2 등 콜백 생략 호출부는 기존과 동일 동작 |
+| 2026-07-14 | **`alerts_outbox` 멱등 키는 `intent_id`가 아니라 `(side, price, terminal_state, recorded_at)`**, `recorded_at`은 서비스가 outbox 기록 시점에 wall-clock으로 찍음 | `intent_id`는 D5Detector 내부 프로세스 카운터라 재시작마다 0부터 다시 시작 — 이를 유일키에 쓰면 재시작 직후 다른 인텐트가 우연히 같은 (side,price,state,intent_id)를 얻어 `INSERT OR IGNORE`가 진짜 알림을 조용히 삼킬 위험 |
+| 2026-07-14 | **D3/D4는 M3 결정대로 여전히 구조화 로그만, D5 종국(확정/추정)만 `alerts_outbox` 대상** — PRD §9.4 범위 그대로 (진행률·D2·watchdog은 outbox 미사용) | 진행률/D2/watchdog은 시효성 신호라 재시작 후 재전송 가치가 없음(다음 경계/버스트/재연결 통지가 대체) — PRD 명시 범위 한정을 그대로 구현 |
+| 2026-07-14 | **M4 완료 기준을 자동화 테스트로 한정, 실전 케이스1/2 알림 확인은 후속 세션으로 이월** (사용자 확정) | 1000+ BTC 벽의 60%+ 체결/상위 리필은 예측 불가능한 시장 이벤트(M3 60s 실캡처에서도 벽 1개만 관측) — M2가 실토큰 8h 검증 런을 구현 완료 후 별도 세션에서 진행한 전례와 동일 패턴 |
 | 2026-07-13 | **D2 요약 "판정" 신설 — 델타비 × 가격 반응 결합** (실운영 D+1 피드백, 사용자 승인 플랜): 요약에 `verdict` 추가 — 쏠림(델타비 ≥ `summary_absorb_delta_min` 0.35)인데 에피소드 변화 < `summary_move_min_pct` 0.1% → 흡수(정체), 밀렸어도 확정 시점(종료 +병합 창) 최근 체결가가 에피소드 시가 회복 → 흡수(되돌림), 따라가고 유지 → 관철, 델타비 ≤ 0.2 → 양방향 충돌, 사이 → 혼합. 흡수 방향 = 흡수당한 테이커 쪽(매도 흡수 = 지지 후보). `finalize_price` 필드 신설, 온셋 라벨은 현행 유지 | 실운영 첫날 13 에피소드 검증에서 델타비 단독 라벨의 오분류 실측: 14:27 델타비 0.90 "방향성 매도"가 -0.11%밖에 못 밀고 요약 시점 시가 회복(실체는 매도 흡수), 16:38 361 BTC 매도 우위 가격 정체가 "혼합"으로 뭉개짐. 방향성 매도 3건 모두 30분 내 회복 — 가격 반응 없는 델타 라벨은 오독 유발. 요약이 +10분 뒤 발송되는 구조를 근거 데이터로 재활용(추가 대기 없음). 임계 2개는 n=13 잠정값 — M6 튜닝 대상. 실시간 벽 단위 흡수(D3)와 층위 구분 명시 |
 | 2026-07-12 | **배포 방식 = git pull + venv + systemd, Docker 기각** (사용자 확정. 대상: Hostinger KVM2 / Ubuntu 24.04). D1&D2 상태 우선 배포를 위해 M5 중 워치독 알림·systemd 유닛·런북을 선행하고 M3/M4는 배포 후 진행 | 의존성 2개(pyyaml·aiohttp)·순수 Python·SQLite 표준 라이브러리라 Docker의 재현성 이점이 없음. Ubuntu 24.04 기본 python3 = 3.12로 요구 버전 일치. 프로세스 감독은 어차피 systemd 몫이고, M6 임계치 튜닝의 config 수정→restart 사이클도 이미지 재빌드 없는 쪽이 단순 |
 | 2026-07-12 | **물량벽 정기 리포트 신설** (PRD 외 신규 기능, 사용자 요청·플랜 승인 — `alerting/wall_report.py`): `alerts.send_wall_report` + `wall_report_interval_minutes`(기본 60분) 추가. 벽 레지스트리 스냅샷을 저항(ask)/지지(bid)로 나눠 정기 발송 — 대형(≥`size_threshold_btc`) 전부 + 소형은 현재가 근접순 8개 캡("외 N개" 표기), unconfirmed `?` 접미, 현재가 반대편 unconfirmed 잔재(가격 통과 후 미재확인)는 표시 제외. epoch 활성 + 오더북 존재 시에만 발송(스킵 시 로그), dedup/쿨다운 미적용 | 이벤트형 알림(D1/D2)만으로는 현 시점 벽 분포를 한눈에 볼 수 없다는 사용자 요청. 정기 스냅샷이라 쿨다운 불필요, 현재가는 depth 기반이므로 epoch 게이팅 준수. 캡은 텔레그램 4,096자 한도 + 가독성 |
