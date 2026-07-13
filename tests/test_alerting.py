@@ -318,3 +318,29 @@ def test_sender_redacts_token_in_failure_logs(caplog):
         run_sender_until(sender, lambda: len(post.calls) >= 5)
     for record in caplog.records:
         assert "TOKEN123" not in getattr(record, "body", "")
+
+
+def test_on_sent_called_once_on_success():
+    post = FakePost([(200, "ok")])
+    sender = make_sender(post)
+    calls = []
+    sender.enqueue("msg", on_sent=lambda: calls.append(1))
+    run_sender_until(sender, lambda: len(post.calls) >= 1)
+    assert calls == [1]
+
+
+def test_on_sent_not_called_after_retries_exhausted():
+    post = FakePost([(500, "err")])
+    sender = make_sender(post, sleeps=[])
+    calls = []
+    sender.enqueue("msg", on_sent=lambda: calls.append(1))
+    run_sender_until(sender, lambda: len(post.calls) >= 5)
+    assert calls == []  # 소진 드롭 — outbox가 미발송으로 남아야 함
+
+
+def test_enqueue_without_on_sent_still_works():
+    post = FakePost([(200, "ok")])
+    sender = make_sender(post)
+    sender.enqueue("msg")  # on_sent 생략 — D1/D2 기존 경로
+    run_sender_until(sender, lambda: len(post.calls) >= 1)
+    assert post.calls[0][1]["text"] == "msg"

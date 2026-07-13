@@ -6,6 +6,9 @@
 - 실패 시 지수 백오프 재시도, `MAX_ATTEMPTS` 소진 시 드롭 + 에러 로그 — M2의
   D1/D2 알림은 시효성 신호라 무한 재시도가 무의미. D5 종국 알림의 유실 방지는
   M4 outbox 소관 (PRD §9.4 적용 범위 한정)
+- `enqueue()`의 `on_sent` 콜백(M4): 발송 성공(status 200) 시에만 호출한다 —
+  재시도 소진 실패 시엔 호출하지 않아 outbox가 미발송 상태로 남고 재시작 시
+  재전송된다. D1/D2 등 outbox 미사용 호출부는 생략(`None`)하면 기존과 동일
 - 토큰은 `TELEGRAM_BOT_TOKEN` 환경변수로만 주입 (main에서 읽어 전달, PRD §9.3).
   URL에 토큰이 들어가므로 로그에는 URL·예외 문자열을 그대로 남기지 않는다
 """
@@ -45,11 +48,11 @@ class TelegramSender:
         self._monotonic = monotonic
         self._sleep = sleep
         self._post = post or self._default_post
-        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._queue: asyncio.Queue[tuple[str, Callable[[], None] | None]] = asyncio.Queue()
         self._last_send_at: float | None = None
 
-    def enqueue(self, text: str) -> None:
-        self._queue.put_nowait(text)
+    def enqueue(self, text: str, on_sent: Callable[[], None] | None = None) -> None:
+        self._queue.put_nowait((text, on_sent))
 
     def pending(self) -> int:
         return self._queue.qsize()
@@ -57,9 +60,9 @@ class TelegramSender:
     async def run(self) -> None:
         """발송 워커 — 취소로만 종료된다."""
         while True:
-            text = await self._queue.get()
+            text, on_sent = await self._queue.get()
             await self._throttle()
-            await self._send_with_retry(text)
+            await self._send_with_retry(text, on_sent)
 
     async def _throttle(self) -> None:
         if self._last_send_at is None:
@@ -68,7 +71,7 @@ class TelegramSender:
         if wait > 0:
             await self._sleep(wait)
 
-    async def _send_with_retry(self, text: str) -> None:
+    async def _send_with_retry(self, text: str, on_sent: Callable[[], None] | None = None) -> None:
         backoff = INITIAL_RETRY_BACKOFF_SECONDS
         for attempt in range(1, MAX_ATTEMPTS + 1):
             self._last_send_at = self._monotonic()
@@ -78,6 +81,8 @@ class TelegramSender:
                 )
                 if status == 200:
                     logger.info("telegram alert sent", extra={"attempt": attempt})
+                    if on_sent is not None:
+                        on_sent()
                     return
                 logger.warning(
                     "telegram send failed",
