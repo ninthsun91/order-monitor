@@ -12,7 +12,7 @@ from order_monitor.ingestion.events import (
     stream_names,
 )
 from order_monitor.persistence.walls import WallStore
-from order_monitor.service import MonitorService
+from order_monitor.service import MonitorService, seconds_until_boundary
 
 EXAMPLE_CONFIG = Path(__file__).resolve().parent.parent / "config.example.yaml"
 DEPTH, AGG, DIFF = stream_names("BTC/USDT")
@@ -195,6 +195,14 @@ def test_wall_report_built_from_registry_and_book(service):
 def test_wall_report_skipped_outside_epoch(service):
     service.on_connected()
     assert service.build_wall_report() is None
+
+
+def test_wall_report_boundary_alignment():
+    # 정시 발송 (사용자 요청 2026-07-13) — 기동 시각이 아니라 벽시계 경계 기준
+    assert seconds_until_boundary(3000.0, 3600.0) == 600.0
+    # 경계 정각에서는 다음 경계까지 전체 간격 — 발송 직후 이중 발송 방지
+    assert seconds_until_boundary(7200.0, 3600.0) == 3600.0
+    assert seconds_until_boundary(7200.5, 3600.0) == 3599.5
 
 
 def test_stream_stale_notice_flows_to_alert_queue(service):

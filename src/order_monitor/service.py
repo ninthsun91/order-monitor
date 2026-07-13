@@ -50,6 +50,15 @@ STALENESS_CHECK_INTERVAL_SECONDS = 1.0
 PRUNE_INTERVAL_SECONDS = 3600.0
 
 
+def seconds_until_boundary(now_epoch: float, interval_seconds: float) -> float:
+    """다음 벽시계 경계(epoch 초의 interval 배수)까지 남은 시간.
+
+    경계에 정확히 걸린 경우 다음 경계까지 전체 간격을 반환 — 발송 직후
+    재계산에서 같은 경계로 0이 나와 이중 발송되는 일을 막는다.
+    """
+    return interval_seconds - now_epoch % interval_seconds
+
+
 class MonitorService:
     def __init__(self, config: AppConfig, db_path: str | Path, *, telegram_token: str) -> None:
         self._config = config
@@ -208,12 +217,16 @@ class MonitorService:
                     self._emit(d2_event)
 
     async def _wall_report_loop(self) -> None:
-        """물량벽 정기 리포트 — epoch 활성 중에만 발송 (현재가는 depth 기반)."""
+        """호가벽 정기 리포트 — 벽시계 정시 경계 발송, epoch 활성 중에만 (현재가는 depth 기반).
+
+        기동 시각 기준 간격이 아니라 epoch 초의 interval 배수 경계에 맞춘다 —
+        60분이면 매시 정각 (KST는 정수 시간 오프셋이라 UTC 정각 = KST 정각).
+        """
         if not self._config.alerts.send_wall_report:
             return
         interval = self._config.alerts.wall_report_interval_minutes * 60.0
         while True:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(seconds_until_boundary(time.time(), interval))
             text = self.build_wall_report()
             if text is None:
                 logger.info("wall report skipped — epoch inactive or book empty")

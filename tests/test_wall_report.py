@@ -1,4 +1,4 @@
-"""물량벽 정기 리포트 포맷터 — 분류·정렬·캡·unconfirmed 표시 규칙."""
+"""호가벽 정기 리포트 포맷터 — 분류·정렬·캡·unconfirmed 표시 규칙."""
 
 from decimal import Decimal
 
@@ -41,17 +41,18 @@ def test_header_and_sections():
             wall("63800", "210", Side.BUY),
         ]
     )
-    assert "📊 물량벽 현황 — BTC/USDT (KST 12:00)" in text
-    assert "현재가 64,000 · 추적 3개" in text
+    assert "📊 호가벽 현황 — BTC/USDT (KST 12:00)" in text
+    assert "현재가 64,000" in text
+    assert "추적" not in text  # 추적 개수 표시 제거 (사용자 요청 2026-07-13)
     assert "🧱 66,000 — 1,850 BTC (+3.1%)" in text
     assert "🧱 62,000 — 1,200 BTC (-3.1%)" in text
     assert "· 63,800 — 210 BTC (-0.3%)" in text
-    assert "🧱 ≥1,000 BTC · ? = 미확인" in text
+    assert "미확인" not in text  # 범례 푸터 제거 (사용자 요청 2026-07-13)
 
 
 def test_sides_map_to_resistance_and_support():
     text = report([wall("65000", "300", Side.SELL), wall("63000", "300", Side.BUY)])
-    resistance, support = text.split("── 지지 (bid) ──")
+    resistance, support = text.split("── 매수벽 (지지) ──")
     assert "65,000" in resistance and "63,000" not in resistance
     assert "63,000" in support
 
@@ -79,7 +80,7 @@ def test_small_walls_capped_but_large_always_shown():
     assert "62,300" in text and "62,200" not in text
 
 
-def test_unconfirmed_marker_and_wrong_side_exclusion():
+def test_unconfirmed_shown_unmarked_but_wrong_side_excluded():
     text = report(
         [
             wall("63000", "500", Side.BUY, unconfirmed=True),
@@ -87,11 +88,11 @@ def test_unconfirmed_marker_and_wrong_side_exclusion():
             wall("65000", "800", Side.BUY, unconfirmed=True),
         ]
     )
-    assert "· 63,000 — 500 BTC (-1.6%) ?" in text
+    assert "· 63,000 — 500 BTC (-1.6%)" in text  # `?` 접미 제거 (2026-07-13)
+    assert "?" not in text
     assert "65,000" not in text
 
 
 def test_empty_sections_render_placeholder():
     text = report([])
     assert text.count("(없음)") == 2
-    assert "추적 0개" in text
