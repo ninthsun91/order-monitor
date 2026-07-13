@@ -66,11 +66,14 @@ class MonitorService:
 
         self.order_book = OrderBook()
         self.trade_window = TradeWindow(config.thresholds.window_seconds)
-        self.level_tracker = LevelTracker()
         # 판정 경로 float 금지 (PRD §7) — config 수치는 여기서 Decimal로 변환
         self.wall_registry = WallRegistry(
             record_min_qty=Decimal(str(config.wall_tracker.record_min_qty_btc)),
             size_threshold=Decimal(str(config.thresholds.size_threshold_btc)),
+        )
+        # 벽 레벨은 top-20 창 이탈에도 누적 보존 (§7 v1.4 예외 — level_tracker docstring)
+        self.level_tracker = LevelTracker(
+            retain=lambda side, price: self.wall_registry.get(side, price) is not None
         )
         self.tracker = SessionEpochTracker(
             symbol=config.symbol,
@@ -109,7 +112,8 @@ class MonitorService:
         self._store: WallStore | None = None
 
     def _cum_traded_at_level(self, side, price: Decimal) -> Decimal:
-        # top-20 창 밖이면 관측된 체결이 없다는 뜻 — 0 (§7 스코프 전제)
+        # 창 진입 이력 없는 레벨은 관측된 체결이 없다는 뜻 — 0. 벽 레벨은 창
+        # 이탈에도 엔트리가 보존되어 생애 누적이 유지된다 (§7 v1.4 예외)
         level = self.level_tracker.get(side, price)
         return level.cum_traded_at_level if level is not None else Decimal(0)
 

@@ -116,6 +116,43 @@ class TestLevelTracker:
         assert entry.current_size == Decimal("4.0")
         assert entry.cum_traded_at_level == Decimal("1.0")
 
+    def test_retained_level_survives_window_exit(self):
+        # 벽 레벨은 창 이탈에도 누적 보존 (§7 v1.4 예외 — D3 생애 누적의 근거)
+        walls = {(Side.BUY, Decimal("61000"))}
+        tracker = LevelTracker(retain=lambda side, price: (side, price) in walls)
+        tracker.apply_snapshot(snapshot([("61000", "1200")], []))
+        tracker.record_trade(trade("61000", "300", aggressor=Side.SELL))
+        # 반등으로 벽이 창 이탈 — 비벽 레벨만 제거
+        tracker.apply_snapshot(snapshot([("61060", "2.0")], []))
+        entry = tracker.get(Side.BUY, Decimal("61000"))
+        assert entry is not None
+        assert entry.cum_traded_at_level == Decimal("300")
+        # 재접촉: 크기 갱신 + 누적 연속
+        tracker.apply_snapshot(snapshot([("61000", "900")], []))
+        tracker.record_trade(trade("61000", "150", aggressor=Side.SELL))
+        entry = tracker.get(Side.BUY, Decimal("61000"))
+        assert entry.current_size == Decimal("900")
+        assert entry.cum_traded_at_level == Decimal("450")
+
+    def test_retained_level_removed_after_predicate_turns_false(self):
+        # 벽이 레지스트리에서 소멸하면 다음 스냅샷에서 자연 제거
+        walls = {(Side.BUY, Decimal("61000"))}
+        tracker = LevelTracker(retain=lambda side, price: (side, price) in walls)
+        tracker.apply_snapshot(snapshot([("61000", "1200")], []))
+        tracker.apply_snapshot(snapshot([("61060", "2.0")], []))
+        assert tracker.get(Side.BUY, Decimal("61000")) is not None
+        walls.clear()  # 벽 소멸
+        tracker.apply_snapshot(snapshot([("61061", "2.0")], []))
+        assert tracker.get(Side.BUY, Decimal("61000")) is None
+
+    def test_non_retained_levels_still_dropped(self):
+        walls = {(Side.BUY, Decimal("61000"))}
+        tracker = LevelTracker(retain=lambda side, price: (side, price) in walls)
+        tracker.apply_snapshot(snapshot([("61000", "1200"), ("60999", "3.0")], []))
+        tracker.apply_snapshot(snapshot([("61060", "2.0")], []))
+        assert tracker.get(Side.BUY, Decimal("60999")) is None
+        assert tracker.get(Side.BUY, Decimal("61000")) is not None
+
 
 class TestTradeWindowTotals:
     def test_totals_split_by_aggressor(self):
