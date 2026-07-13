@@ -1,0 +1,19 @@
+{"t": 0.0, "control": "connect"}
+{"t": 0.1, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 1, "bids": [["61050", "1"]], "asks": [["61051", "1"]]}}
+{"t": 0.2, "stream": "btcusdt@aggTrade", "data": {"a": 1, "p": "61050", "q": "0.5", "m": true, "T": 200}}
+{"t": 0.3, "stream": "btcusdt@depth@100ms", "data": {"U": 100, "u": 101, "E": 300, "b": [["55000", "500"]], "a": []}}
+{"t": 1.0, "stream": "btcusdt@aggTrade", "data": {"a": 10, "p": "61000", "q": "10", "m": true, "T": 1000}}
+{"t": 1.05, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 2, "bids": [["61000", "90"]], "asks": [["61051", "1"]]}}
+{"t": 1.1, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 3, "bids": [["61000", "100"]], "asks": [["61051", "1"]]}}
+{"t": 1.3, "stream": "btcusdt@aggTrade", "data": {"a": 11, "p": "61000", "q": "10", "m": true, "T": 1300}}
+{"t": 1.35, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 4, "bids": [["61000", "90"]], "asks": [["61051", "1"]]}}
+{"t": 1.4, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 5, "bids": [["61000", "100"]], "asks": [["61051", "1"]]}}
+{"t": 1.6, "stream": "btcusdt@aggTrade", "data": {"a": 12, "p": "61000", "q": "10", "m": true, "T": 1600}}
+{"t": 1.65, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 6, "bids": [["61000", "90"]], "asks": [["61051", "1"]]}}
+{"t": 1.7, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 7, "bids": [["61000", "100"]], "asks": [["61051", "1"]]}}
+{"t": 1.9, "stream": "btcusdt@aggTrade", "data": {"a": 13, "p": "61000", "q": "10", "m": true, "T": 1900}}
+{"t": 1.95, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 8, "bids": [["61000", "90"]], "asks": [["61051", "1"]]}}
+{"t": 2.0, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 9, "bids": [["61000", "100"]], "asks": [["61051", "1"]]}}
+{"t": 2.2, "stream": "btcusdt@aggTrade", "data": {"a": 14, "p": "61000", "q": "10", "m": true, "T": 2200}}
+{"t": 2.25, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 10, "bids": [["61000", "90"]], "asks": [["61051", "1"]]}}
+{"t": 2.3, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 11, "bids": [["61000", "100"]], "asks": [["61051", "1"]]}}

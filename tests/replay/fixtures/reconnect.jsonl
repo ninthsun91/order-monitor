@@ -1,0 +1,15 @@
+{"t": 0.0, "control": "connect"}
+{"t": 0.1, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 1, "bids": [["61000", "5"]], "asks": [["61001", "5"]]}}
+{"t": 0.2, "stream": "btcusdt@aggTrade", "data": {"a": 1, "p": "61000", "q": "0.5", "m": true, "T": 200}}
+{"t": 0.3, "stream": "btcusdt@depth@100ms", "data": {"U": 100, "u": 101, "E": 300, "b": [["60000", "1500"]], "a": []}}
+{"t": 4.0, "stream": "btcusdt@depth@100ms", "data": {"U": 102, "u": 103, "E": 4000, "b": [["59000", "200"]], "a": []}}
+{"t": 4.1, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 2, "bids": [["60000", "1500"]], "asks": [["60001", "1"]]}}
+{"t": 4.2, "stream": "btcusdt@aggTrade", "data": {"a": 2, "p": "60000", "q": "300", "m": true, "T": 4200}}
+{"t": 4.5, "control": "disconnect"}
+{"t": 5.0, "control": "connect"}
+{"t": 5.1, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 3, "bids": [["61000", "5"]], "asks": [["61001", "5"]]}}
+{"t": 5.2, "stream": "btcusdt@aggTrade", "data": {"a": 3, "p": "61000", "q": "0.5", "m": true, "T": 5200}}
+{"t": 5.3, "stream": "btcusdt@depth@100ms", "data": {"U": 200, "u": 201, "E": 5300, "b": [["60000", "1500"]], "a": []}}
+{"t": 5.4, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 4, "bids": [["60000", "1500"]], "asks": [["60001", "1"]]}}
+{"t": 5.5, "stream": "btcusdt@aggTrade", "data": {"a": 4, "p": "60000", "q": "200", "m": true, "T": 5500}}
+{"t": 5.8, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 5, "bids": [["60500", "5"]], "asks": [["60501", "1"]]}}

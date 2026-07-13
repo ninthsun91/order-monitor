@@ -17,6 +17,7 @@ import dataclasses
 import enum
 import logging
 import time
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
 
@@ -72,9 +73,19 @@ def seconds_until_boundary(now_epoch: float, interval_seconds: float) -> float:
 
 
 class MonitorService:
-    def __init__(self, config: AppConfig, db_path: str | Path, *, telegram_token: str) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        db_path: str | Path,
+        *,
+        telegram_token: str,
+        clock: Callable[[], float] = time.time,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        # 클록 주입은 결정적 replay 테스트용 (PRD §13) — 운영은 기본값
         self._config = config
         self._db_path = db_path
+        self._clock = clock
 
         self.order_book = OrderBook()
         self.trade_window = TradeWindow(config.thresholds.window_seconds)
@@ -82,6 +93,7 @@ class MonitorService:
         self.wall_registry = WallRegistry(
             record_min_qty=Decimal(str(config.wall_tracker.record_min_qty_btc)),
             size_threshold=Decimal(str(config.thresholds.size_threshold_btc)),
+            clock=clock,
         )
         # 벽 레벨은 top-20 창 이탈에도 누적 보존 (§7 v1.4 예외 — level_tracker docstring)
         self.level_tracker = LevelTracker(
@@ -91,6 +103,7 @@ class MonitorService:
             symbol=config.symbol,
             stale_seconds=config.watchdog.stale_seconds,
             trade_stale_seconds=config.watchdog.trade_stale_seconds,
+            clock=monotonic,
         )
         self.ws_client = BinanceWSClient(
             config.symbol,
@@ -104,6 +117,7 @@ class MonitorService:
             exit_ratio=Decimal(str(config.thresholds.exit_ratio)),
             fill_attribution=Decimal(str(config.thresholds.fill_attribution)),
             cum_traded_lookup=self._cum_traded_at_level,
+            clock=clock,
         )
         self.volume_baseline = VolumeBaseline(config.thresholds.vol_baseline_hours)
         self.d2 = D2Detector(
@@ -118,6 +132,7 @@ class MonitorService:
             window_seconds=config.thresholds.window_seconds,
             window=self.trade_window,
             baseline=self.volume_baseline,
+            monotonic=monotonic,
         )
         self.contact = ContactEpisodeTracker(
             pierce_persist_snapshots=config.thresholds.pierce_persist_snapshots
@@ -132,7 +147,7 @@ class MonitorService:
             refill_window_ms=config.thresholds.refill_window_ms,
         )
         self.telegram = TelegramSender(telegram_token, config.telegram.chat_id)
-        self.dispatcher = AlertDispatcher(config, self.telegram)
+        self.dispatcher = AlertDispatcher(config, self.telegram, monotonic=monotonic)
         self._store: WallStore | None = None
 
     def _cum_traded_at_level(self, side, price: Decimal) -> Decimal:
@@ -150,7 +165,7 @@ class MonitorService:
             self.wall_registry.restore(restored)
             # 재시작 = 청취 공백 → 전체 unconfirmed (PRD §12.1 규칙 1)
             self.wall_registry.mark_all_unconfirmed()
-            self._store.mark_all_unconfirmed(since=time.time())
+            self._store.mark_all_unconfirmed(since=self._clock())
         logger.info("wall registry restored", extra={"count": len(restored)})
 
     async def run(self) -> None:
@@ -277,7 +292,7 @@ class MonitorService:
             return
         interval = self._config.alerts.wall_report_interval_minutes * 60.0
         while True:
-            await asyncio.sleep(seconds_until_boundary(time.time(), interval))
+            await asyncio.sleep(seconds_until_boundary(self._clock(), interval))
             text = self.build_wall_report()
             if text is None:
                 logger.info("wall report skipped — epoch inactive or book empty")
@@ -294,7 +309,7 @@ class MonitorService:
             best_ask=best_ask,
             symbol=self._config.symbol,
             size_threshold=Decimal(str(self._config.thresholds.size_threshold_btc)),
-            now_epoch_seconds=time.time(),
+            now_epoch_seconds=self._clock(),
         )
 
     async def _prune_loop(self) -> None:
@@ -362,7 +377,7 @@ class MonitorService:
             elif isinstance(notice, DiffListeningGap):
                 self.wall_registry.mark_all_unconfirmed()
                 if self._store is not None:
-                    self._store.mark_all_unconfirmed(since=time.time())
+                    self._store.mark_all_unconfirmed(since=self._clock())
                 logger.warning(
                     "diff listening gap — wall registry marked unconfirmed",
                     extra={"reason": notice.reason, "walls": len(self.wall_registry)},
