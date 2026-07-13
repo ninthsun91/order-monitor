@@ -10,7 +10,7 @@ from order_monitor.alerting.dispatcher import AlertDispatcher
 from order_monitor.alerting.telegram import TelegramSender
 from order_monitor.config import load_config
 from order_monitor.detectors.d1 import D1Appeared, D1Attribution, D1Removed, D1Suppressed
-from order_monitor.detectors.d2 import D2BurstOnset, D2BurstSummary, D2Label
+from order_monitor.detectors.d2 import D2BurstOnset, D2BurstSummary, D2Label, D2Verdict
 from order_monitor.ingestion.events import Side
 
 EXAMPLE_CONFIG = Path(__file__).resolve().parent.parent / "config.example.yaml"
@@ -82,6 +82,8 @@ def summary():
         high_price=Decimal("64320"),
         low_price=Decimal("64020"),
         close_price=Decimal("64150"),
+        finalize_price=Decimal("64155"),
+        verdict=D2Verdict.TWO_WAY,
     )
 
 
@@ -142,7 +144,24 @@ def test_d2_summary_format():
     # 1207 ÷ (분당 8.4 × 10분) ≈ 14.4 — 표시 구간과 같은 값으로 환산
     assert "누적 1,207 BTC (매수 590 / 매도 617 · Δ -27.0) — 평상시 10분치의 14.4배" in text
     assert "성격: 양방향(흡수성 후보) (델타비 0.02)" in text
+    assert "판정: 양방향 충돌 — 요약 시점 64,155 (+0.01%)" in text
     assert "가격: 64,300 → 64,150 (-0.23%) · 고 64,320 / 저 64,020" in text
+
+
+def test_d2_summary_verdict_absorbed_retrace_format():
+    # 실측 사례(2026-07-13 14:27 KST): 델타비 0.90 매도인데 요약 시점 시가 회복
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender, monotonic=FakeClock())
+    event = dataclasses.replace(
+        summary(),
+        buy_qty=Decimal("6.1"),
+        sell_qty=Decimal("112.1"),
+        total_qty=Decimal("118.2"),
+        verdict=D2Verdict.SELL_ABSORBED_RETRACE,
+        finalize_price=Decimal("64310"),
+    )
+    dispatcher.dispatch(event)
+    assert "판정: 매도 흡수 (되돌림) — 요약 시점 64,310 (+0.25%)" in sender.sent[0]
 
 
 def test_d1_removed_format_shows_attribution():

@@ -1,11 +1,17 @@
 """D2 에피소드형 상대 임계 볼륨 버스트 (PRD §8 D2 v1.3).
 
-온셋/히스테리시스 종료/병합/성격 라벨/워밍업 보류/epoch 폐기.
+온셋/히스테리시스 종료/병합/성격 라벨/요약 판정/워밍업 보류/epoch 폐기.
 """
 
 from decimal import Decimal
 
-from order_monitor.detectors.d2 import D2BurstOnset, D2BurstSummary, D2Detector, D2Label
+from order_monitor.detectors.d2 import (
+    D2BurstOnset,
+    D2BurstSummary,
+    D2Detector,
+    D2Label,
+    D2Verdict,
+)
 from order_monitor.ingestion.events import AggTradeEvent, Side
 from order_monitor.state.trade_window import TradeWindow
 
@@ -47,6 +53,8 @@ def make_detector(mean="4", clock=None):
         merge_seconds=600.0,
         directional_ratio=Decimal("0.5"),
         balanced_ratio=Decimal("0.2"),
+        absorb_delta_min=Decimal("0.35"),
+        move_min_pct=Decimal("0.1"),
         window_seconds=60.0,
         window=window,
         baseline=StubBaseline(Decimal(mean) if mean is not None else None),
@@ -142,6 +150,10 @@ def test_summary_uses_checkpoint_and_excludes_cooling_trades():
     assert summary.low_price == Decimal("63900")
     assert summary.close_price == Decimal("63900")
     assert summary.baseline_per_minute == Decimal(4)
+    # 확정 시점 최근 체결가(병합 대기 중 체결 포함) — 판정의 되돌림 근거
+    assert summary.finalize_price == Decimal("63000")
+    # 매수 쏠림(50/1)인데 가격이 델타 방향으로 못 감(-0.16%) → 매수 흡수 (정체)
+    assert summary.verdict is D2Verdict.BUY_ABSORBED_STALL
     assert not detector.episode_active
 
 
@@ -192,6 +204,29 @@ def test_label_boundaries():
     assert detector._label(Decimal(10), Decimal(30)) is D2Label.DIRECTIONAL_SELL
     assert detector._label(Decimal(24), Decimal(16)) is D2Label.BALANCED  # r=0.2
     assert detector._label(Decimal(25), Decimal(15)) is D2Label.MIXED  # r=0.25
+
+
+# ── 요약 판정 — 델타비 × 가격 반응 (결정 기록 2026-07-13) ────
+
+
+def test_verdict_branches():
+    detector, _ = make_detector()
+    v, D = detector._verdict, Decimal
+    # (buy, sell, open, close, finalize_price)
+    # 쏠림 없음 (r=0.09 ≤ 0.2) → 양방향 충돌
+    assert v(D(50), D(60), D(64000), D(64000), D(64000)) is D2Verdict.TWO_WAY
+    # 판단 유보 구간 (0.2 < r=0.27 < 0.35) → 혼합
+    assert v(D(40), D(70), D(64000), D(63800), D(63800)) is D2Verdict.MIXED
+    # 매도 쏠림(r=0.82)인데 변화 -0.03% < 0.1% → 매도 흡수 (정체)
+    assert v(D(10), D(100), D(64000), D(63980), D(63980)) is D2Verdict.SELL_ABSORBED_STALL
+    # 밀렸지만(-0.31%) 확정 시점에 시가 회복 → 매도 흡수 (되돌림)
+    assert v(D(10), D(100), D(64000), D(63800), D(64050)) is D2Verdict.SELL_ABSORBED_RETRACE
+    # 밀렸고 시가 아래 유지 → 매도 관철
+    assert v(D(10), D(100), D(64000), D(63800), D(63850)) is D2Verdict.SELL_FOLLOW
+    # 매수 쪽 대칭
+    assert v(D(100), D(10), D(64000), D(64020), D(64020)) is D2Verdict.BUY_ABSORBED_STALL
+    assert v(D(100), D(10), D(64000), D(64200), D(63990)) is D2Verdict.BUY_ABSORBED_RETRACE
+    assert v(D(100), D(10), D(64000), D(64200), D(64150)) is D2Verdict.BUY_FOLLOW
 
 
 # ── epoch 종료 폐기 (PRD §5.4) ───────────────────────────────

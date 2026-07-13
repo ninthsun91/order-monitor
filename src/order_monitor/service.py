@@ -89,6 +89,8 @@ class MonitorService:
             merge_seconds=config.thresholds.episode_merge_minutes * 60.0,
             directional_ratio=Decimal(str(config.thresholds.delta_directional_ratio)),
             balanced_ratio=Decimal(str(config.thresholds.delta_balanced_ratio)),
+            absorb_delta_min=Decimal(str(config.thresholds.summary_absorb_delta_min)),
+            move_min_pct=Decimal(str(config.thresholds.summary_move_min_pct)),
             window_seconds=config.thresholds.window_seconds,
             window=self.trade_window,
             baseline=self.volume_baseline,

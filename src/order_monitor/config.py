@@ -25,6 +25,8 @@ class ThresholdsConfig:
     episode_merge_minutes: float
     delta_directional_ratio: float
     delta_balanced_ratio: float
+    summary_absorb_delta_min: float
+    summary_move_min_pct: float
     absorption_min_pct: float
     pierce_persist_snapshots: int
     iceberg_margin_btc: float
@@ -130,6 +132,7 @@ _RATIO_FIELDS = (
     "episode_exit_ratio",
     "delta_directional_ratio",
     "delta_balanced_ratio",
+    "summary_absorb_delta_min",
 )
 
 
@@ -160,6 +163,12 @@ def _validate_invariants(config: AppConfig) -> None:
     if config.thresholds.delta_balanced_ratio >= config.thresholds.delta_directional_ratio:
         raise ConfigError(
             "'thresholds.delta_balanced_ratio' must be less than 'thresholds.delta_directional_ratio'"
+        )
+
+    # 요약 판정의 흡수/관철 대상 하한은 양방향 경계보다 높아야 판정 구간이 성립
+    if config.thresholds.summary_absorb_delta_min <= config.thresholds.delta_balanced_ratio:
+        raise ConfigError(
+            "'thresholds.summary_absorb_delta_min' must be greater than 'thresholds.delta_balanced_ratio'"
         )
 
     if config.thresholds.vol_multiplier <= 1:

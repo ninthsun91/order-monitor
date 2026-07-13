@@ -13,6 +13,8 @@ thresholds:
   episode_merge_minutes: 10      # D2 에피소드 병합 창 (잠정 종료 후 이 시간 내 재점화 = 같은 에피소드)
   delta_directional_ratio: 0.5   # D2 성격 라벨: |Δ|/V ≥ 이 값 → 방향성
   delta_balanced_ratio: 0.2      # D2 성격 라벨: |Δ|/V ≤ 이 값 → 양방향(흡수성 후보)
+  summary_absorb_delta_min: 0.35 # D2 요약 판정: 흡수/관철 판정 대상 최소 델타비 (결정 기록 2026-07-13, M6 튜닝 대상)
+  summary_move_min_pct: 0.1      # D2 요약 판정: 델타 방향 '관철'로 보는 최소 에피소드 변화율(%)
   absorption_min_pct: 0.3        # D3
   pierce_persist_snapshots: 2    # D3 관통 보조 신호 지속성 (PRD §8 D3 v1.2)
   iceberg_margin_btc: 20         # D4 최소 인정 리필량 (PRD §8 D4 v1.2)

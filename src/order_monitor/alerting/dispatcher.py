@@ -20,7 +20,7 @@ from decimal import Decimal
 
 from order_monitor.config import AppConfig
 from order_monitor.detectors.d1 import D1Appeared, D1Attribution, D1Removed
-from order_monitor.detectors.d2 import D2BurstOnset, D2BurstSummary, D2Label
+from order_monitor.detectors.d2 import D2BurstOnset, D2BurstSummary, D2Label, D2Verdict
 from order_monitor.ingestion.events import Side
 from order_monitor.ingestion.health import StreamStale
 
@@ -38,6 +38,16 @@ _D2_LABEL = {
     D2Label.DIRECTIONAL_SELL: "방향성 매도",
     D2Label.MIXED: "혼합",
     D2Label.BALANCED: "양방향(흡수성 후보)",
+}
+_D2_VERDICT = {
+    D2Verdict.BUY_FOLLOW: "매수 관철",
+    D2Verdict.SELL_FOLLOW: "매도 관철",
+    D2Verdict.BUY_ABSORBED_STALL: "매수 흡수 (정체)",
+    D2Verdict.BUY_ABSORBED_RETRACE: "매수 흡수 (되돌림)",
+    D2Verdict.SELL_ABSORBED_STALL: "매도 흡수 (정체)",
+    D2Verdict.SELL_ABSORBED_RETRACE: "매도 흡수 (되돌림)",
+    D2Verdict.TWO_WAY: "양방향 충돌",
+    D2Verdict.MIXED: "혼합",
 }
 
 
@@ -175,6 +185,8 @@ class AlertDispatcher:
         multiple = event.total_qty / (event.baseline_per_minute * duration_min)
         delta = event.buy_qty - event.sell_qty
         change_pct = (event.close_price - event.open_price) / event.open_price * 100
+        # 판정 줄의 %는 에피소드 종가 → 요약 확정 시점(종료 +병합 창) 가격
+        follow_pct = (event.finalize_price - event.close_price) / event.close_price * 100
         return (
             f"⚡ 볼륨 버스트 요약 (D2) — {duration_min}분 "
             f"(KST {start:%H:%M}~{end:%H:%M})\n"
@@ -183,6 +195,8 @@ class AlertDispatcher:
             f"(매수 {_fmt_approx(event.buy_qty)} / 매도 {_fmt_approx(event.sell_qty)} · Δ {delta:+.1f}) — "
             f"평상시 {duration_min}분치의 {multiple:.1f}배\n"
             f"성격: {_D2_LABEL[event.label]} ({_delta_ratio_text(event.buy_qty, event.sell_qty)})\n"
+            f"판정: {_D2_VERDICT[event.verdict]} — 요약 시점 {_fmt(event.finalize_price)} "
+            f"({follow_pct:+.2f}%)\n"
             f"가격: {_fmt(event.open_price)} → {_fmt(event.close_price)} ({change_pct:+.2f}%) · "
             f"고 {_fmt(event.high_price)} / 저 {_fmt(event.low_price)}"
         )

@@ -9,6 +9,12 @@
 - 기준선 미준비(워밍업) 동안은 전 판정 보류 (PRD §8 D2 워밍업)
 - 성격 라벨: 델타비 |매수−매도|/총합 — 방향성/혼합/양방향(흡수성 후보).
   흡수 확정은 D3 몫, D2는 테이커 흐름 성격만 라벨
+- 요약 판정 (결정 기록 2026-07-13): 델타비에 가격 반응을 결합한 에피소드 사후
+  판단. 쏠림(델타비 ≥ absorb_delta_min)인데 가격이 델타 방향으로 move_min_pct
+  미만이면 흡수(정체), 밀렸어도 확정 시점에 에피소드 시가를 회복했으면
+  흡수(되돌림), 따라갔고 유지 중이면 관철. 요약이 종료 +병합 창 뒤에 확정되는
+  점을 이용해 그 시점의 최근 체결가(finalize_price)를 근거로 쓴다. 실시간 벽
+  단위 흡수(D3, M3)와는 층위가 다른 보완 지표
 - 요약의 누적·가격은 잠정 종료 시점 체크포인트 기준 — 병합 대기 중의 저볼륨
   체결은 재점화 시에만 에피소드에 편입되고, 확정 종료 시에는 제외된다
 - 시계: 병합 창·체결 두절 감지는 monotonic (§11.1), 구간 표기는 exchange_time
@@ -33,6 +39,23 @@ class D2Label(enum.Enum):
     DIRECTIONAL_SELL = "directional_sell"
     MIXED = "mixed"
     BALANCED = "balanced"  # 양방향 — 흡수성 후보
+
+
+class D2Verdict(enum.Enum):
+    """요약 판정 — 테이커 쏠림(델타비) × 가격 반응의 종합 (에피소드 사후 판단).
+
+    흡수의 방향 = 흡수당한 테이커 쪽. SELL_ABSORBED = 매도 테이커가 수동 매수
+    물량에 받아짐(지지 후보), BUY_ABSORBED = 매수가 막힘(저항 후보).
+    """
+
+    BUY_FOLLOW = "buy_follow"                      # 매수 관철 — 상승 동반·유지
+    SELL_FOLLOW = "sell_follow"                    # 매도 관철 — 하락 동반·유지
+    BUY_ABSORBED_STALL = "buy_absorbed_stall"      # 매수 흡수 — 가격 정체
+    BUY_ABSORBED_RETRACE = "buy_absorbed_retrace"  # 매수 흡수 — 요약 시점 시가 회귀
+    SELL_ABSORBED_STALL = "sell_absorbed_stall"    # 매도 흡수 — 가격 정체
+    SELL_ABSORBED_RETRACE = "sell_absorbed_retrace"  # 매도 흡수 — 요약 시점 시가 회복
+    TWO_WAY = "two_way"                            # 양방향 충돌 — 쏠림 없음
+    MIXED = "mixed"                                # 판단 유보 구간
 
 
 @dataclasses.dataclass(frozen=True)
@@ -60,6 +83,8 @@ class D2BurstSummary:
     high_price: Decimal
     low_price: Decimal
     close_price: Decimal
+    finalize_price: Decimal  # 요약 확정 시점 최근 체결가 — 판정의 되돌림 근거
+    verdict: D2Verdict
 
 
 D2Event = D2BurstOnset | D2BurstSummary
@@ -103,7 +128,12 @@ class _Episode:
         self.cooling_since = None
         self._checkpoint = None
 
-    def finalize(self, label: Callable[[Decimal, Decimal], D2Label]) -> D2BurstSummary:
+    def finalize(
+        self,
+        label: Callable[[Decimal, Decimal], D2Label],
+        verdict: Callable[[Decimal, Decimal, Decimal, Decimal, Decimal], D2Verdict],
+        finalize_price: Decimal,
+    ) -> D2BurstSummary:
         buy, sell, end_ex_ms, high, low, close = self._checkpoint
         return D2BurstSummary(
             start_exchange_ms=self.start_ex_ms,
@@ -117,6 +147,8 @@ class _Episode:
             high_price=high,
             low_price=low,
             close_price=close,
+            finalize_price=finalize_price,
+            verdict=verdict(buy, sell, self.open, close, finalize_price),
         )
 
 
@@ -130,6 +162,8 @@ class D2Detector:
         merge_seconds: float,
         directional_ratio: Decimal,
         balanced_ratio: Decimal,
+        absorb_delta_min: Decimal,
+        move_min_pct: Decimal,
         window_seconds: float,
         window: TradeWindow,
         baseline: VolumeBaseline,
@@ -141,12 +175,15 @@ class D2Detector:
         self._merge_seconds = merge_seconds
         self._directional_ratio = directional_ratio
         self._balanced_ratio = balanced_ratio
+        self._absorb_delta_min = absorb_delta_min
+        self._move_min_pct = move_min_pct
         self._window_seconds = window_seconds
         self._window = window
         self._baseline = baseline
         self._monotonic = monotonic
         self._episode: _Episode | None = None
         self._last_trade_monotonic: float | None = None
+        self._last_price: Decimal | None = None
 
     @property
     def episode_active(self) -> bool:
@@ -155,6 +192,7 @@ class D2Detector:
     def on_trade(self, trade: AggTradeEvent) -> list[D2Event]:
         now = self._monotonic()
         self._last_trade_monotonic = now
+        self._last_price = trade.price
         episode = self._episode
         if episode is not None:
             episode.absorb(trade.price, trade.qty, trade.aggressor_side, trade.exchange_time_ms)
@@ -220,7 +258,8 @@ class D2Detector:
         if now - episode.cooling_since < self._merge_seconds:
             return []
         self._episode = None
-        return [episode.finalize(self._label)]
+        # 에피소드는 체결로만 시작하므로 _last_price는 이 시점에 항상 존재
+        return [episode.finalize(self._label, self._verdict, self._last_price)]
 
     def _label(self, buy: Decimal, sell: Decimal) -> D2Label:
         total = buy + sell
@@ -230,3 +269,27 @@ class D2Detector:
         if ratio <= self._balanced_ratio:
             return D2Label.BALANCED
         return D2Label.MIXED
+
+    def _verdict(
+        self,
+        buy: Decimal,
+        sell: Decimal,
+        open_price: Decimal,
+        close_price: Decimal,
+        finalize_price: Decimal,
+    ) -> D2Verdict:
+        ratio = abs(buy - sell) / (buy + sell)
+        if ratio <= self._balanced_ratio:
+            return D2Verdict.TWO_WAY
+        if ratio < self._absorb_delta_min:
+            return D2Verdict.MIXED
+        selling = sell > buy
+        move_pct = (close_price - open_price) / open_price * 100
+        followed = move_pct <= -self._move_min_pct if selling else move_pct >= self._move_min_pct
+        if not followed:
+            return D2Verdict.SELL_ABSORBED_STALL if selling else D2Verdict.BUY_ABSORBED_STALL
+        # 밀렸지만 확정 시점(종료 +병합 창)에 에피소드 시가를 회복 = 플러시가 받아짐
+        retraced = finalize_price >= open_price if selling else finalize_price <= open_price
+        if retraced:
+            return D2Verdict.SELL_ABSORBED_RETRACE if selling else D2Verdict.BUY_ABSORBED_RETRACE
+        return D2Verdict.SELL_FOLLOW if selling else D2Verdict.BUY_FOLLOW
