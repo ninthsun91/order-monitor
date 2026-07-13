@@ -14,6 +14,12 @@ peak/current 두 값 산식은 폐기됨 (경로가 다른데 결과값이 같�
 상태와 독립 — 접촉 스냅샷보다 체결이 먼저 도착하는 순서 역전에도 쌍이 성립한다.
 버퍼는 REFILL_WINDOW_MS로 시간 바운드 (레벨 무관 전역 프루닝 — 메모리 상한).
 누적은 episode 종료·epoch 종료 시 리셋 (PRD §8 D4, §5.4).
+
+**lifetime 리필 누적 (M4, PRD §8 D5 케이스2 재료)**: episode 종료로 지워지는
+`_acc`와 별개로, 같은 인정 리필 델타를 episode 경계 없이 누적하는
+`_lifetime_refill`을 병행 유지한다 — D5 케이스2는 인텐트 등록부터 최대
+`intent_ttl_seconds`(30분)에 걸쳐 상위 구간의 여러 레벨·여러 접촉 episode를
+넘나드는 누적이 필요하기 때문. epoch 종료(`reset()`)에서만 지운다.
 """
 
 from __future__ import annotations
@@ -60,6 +66,8 @@ class D4Detector:
         # episode별 누적 (episode 종료·epoch 종료 시 리셋)
         self._acc: dict[_Key, _Accumulation] = {}
         self._last_size: dict[_Key, Decimal] = {}
+        # lifetime 누적 (M4 D5 케이스2 재료) — episode 종료로 지우지 않음, epoch 종료만
+        self._lifetime_refill: dict[_Key, Decimal] = {}
 
     def on_trade(self, trade: AggTradeEvent) -> None:
         level_side = Side.BUY if trade.aggressor_side is Side.SELL else Side.SELL
@@ -103,6 +111,7 @@ class D4Detector:
             ]
             if not paired:
                 continue  # 체결과 무관한 잔량 증가 (신규 표시 주문) — 배제
+            self._lifetime_refill[key] = self._lifetime_refill.get(key, Decimal(0)) + delta
             acc = self._acc.setdefault(key, _Accumulation())
             acc.refill_added += delta
             acc.credited_trade_ids.update(paired)
@@ -127,7 +136,32 @@ class D4Detector:
         self._acc.pop(key, None)
         self._last_size.pop(key, None)
 
+    def sum_lifetime_refill_above(
+        self, side: Side, intent_price: Decimal, current_price: Decimal | None
+    ) -> Decimal:
+        """의도 레벨과 (같은 side) 현재가 사이 상위 구간의 lifetime 리필 합 (PRD §8 D5 케이스2).
+
+        BUY: `intent_price < price <= current_price`, SELL: 대칭
+        (`current_price <= price < intent_price`). `current_price`가 없으면
+        (오더북 미관측) 0 — 케이스2 판정 보류와 동치.
+        """
+        if current_price is None:
+            return Decimal(0)
+        total = Decimal(0)
+        for (key_side, price), amount in self._lifetime_refill.items():
+            if key_side is not side:
+                continue
+            in_range = (
+                intent_price < price <= current_price
+                if side is Side.BUY
+                else current_price <= price < intent_price
+            )
+            if in_range:
+                total += amount
+        return total
+
     def reset(self) -> None:
-        """epoch 종료 — episode 누적 폐기. 체결 버퍼는 상태 계층이라 유지 (500ms 바운드)."""
+        """epoch 종료 — episode·lifetime 누적 폐기. 체결 버퍼는 상태 계층이라 유지 (500ms 바운드)."""
         self._acc.clear()
         self._last_size.clear()
+        self._lifetime_refill.clear()

@@ -155,6 +155,67 @@ class TestFireConditions:
         assert events[0].refill_added == Decimal("10")
 
 
+class TestLifetimeRefillAbove:
+    def test_accumulates_across_episode_boundaries(self):
+        # 1차 episode에서 리필 10, 종료 후 2차 episode에서 +15 — lifetime은 합산 유지
+        d4 = make_detector(margin="5", min_trades=1)
+        active = episodes(BID)
+        d4.on_depth_snapshot(snapshot(bids=[("61000", "100")], mono=0.0), active)
+        d4.on_trade(trade("61000", "10", mono=0.01, trade_id=1))
+        d4.on_depth_snapshot(snapshot(bids=[("61000", "110")], mono=0.05), active)
+        d4.on_episode_end(
+            EpisodeEnd(
+                episode=ContactEpisode(
+                    side=Side.BUY, price=Decimal("61000"), started_receive_time=0.0
+                ),
+                reason=EpisodeEndReason.REBOUND,
+                ended_receive_time=1.0,
+            )
+        )
+        d4.on_depth_snapshot(snapshot(bids=[("61000", "110")], mono=10.0), active)  # 2차 기준선
+        d4.on_trade(trade("61000", "15", mono=10.01, trade_id=2))
+        d4.on_depth_snapshot(snapshot(bids=[("61000", "125")], mono=10.05), active)
+        assert d4.sum_lifetime_refill_above(Side.BUY, Decimal("60999"), Decimal("61000")) == Decimal(
+            "25"
+        )
+
+    def test_range_bounds_for_buy_are_exclusive_low_inclusive_high(self):
+        d4 = make_detector(margin="5", min_trades=1)
+        d4._lifetime_refill = {
+            (Side.BUY, Decimal("61000")): Decimal("10"),
+            (Side.BUY, Decimal("61050")): Decimal("20"),
+            (Side.BUY, Decimal("61100")): Decimal("30"),  # 범위 밖(현재가 초과)
+        }
+        total = d4.sum_lifetime_refill_above(Side.BUY, Decimal("61000"), Decimal("61050"))
+        assert total == Decimal("20")  # 61000 제외(경계 미포함), 61050 포함, 61100 제외
+
+    def test_range_bounds_for_sell_are_symmetric(self):
+        d4 = make_detector(margin="5", min_trades=1)
+        d4._lifetime_refill = {
+            (Side.SELL, Decimal("62000")): Decimal("10"),
+            (Side.SELL, Decimal("61950")): Decimal("20"),
+            (Side.SELL, Decimal("61900")): Decimal("30"),  # 범위 밖(현재가 미만)
+        }
+        total = d4.sum_lifetime_refill_above(Side.SELL, Decimal("62000"), Decimal("61950"))
+        assert total == Decimal("20")  # 62000 제외, 61950 포함, 61900 제외
+
+    def test_returns_zero_when_current_price_unknown(self):
+        d4 = make_detector(margin="5", min_trades=1)
+        d4._lifetime_refill = {(Side.BUY, Decimal("61050")): Decimal("20")}
+        assert d4.sum_lifetime_refill_above(Side.BUY, Decimal("61000"), None) == Decimal(0)
+
+    def test_ignores_other_side(self):
+        d4 = make_detector(margin="5", min_trades=1)
+        d4._lifetime_refill = {(Side.SELL, Decimal("61050")): Decimal("20")}
+        assert d4.sum_lifetime_refill_above(Side.BUY, Decimal("61000"), Decimal("61100")) == Decimal(0)
+
+    def test_epoch_reset_clears_lifetime_refill(self):
+        d4 = make_detector(margin="5", min_trades=1)
+        d4._lifetime_refill = {(Side.BUY, Decimal("61050")): Decimal("20")}
+        d4.reset()
+        assert d4.sum_lifetime_refill_above(Side.BUY, Decimal("61000"), Decimal("61100")) == Decimal(0)
+
+
 class TestResets:
     def test_episode_end_resets_accumulation(self):
         d4 = make_detector()
