@@ -1,8 +1,10 @@
-"""결정적 replay 테스트 — M3 완료 게이트 (PRD §13).
+"""결정적 replay 테스트 — M3/M4 완료 게이트 (PRD §13).
 
 필수 3 시나리오: 재연결(epoch 종료/재개), 스트림 순서 역전, diff U/u 갭.
 실물 MonitorService를 클록 주입으로 구동하므로 판정 로직만이 아니라
-service 배선(epoch 게이팅, D1→D3 라우팅, 소멸 순서)까지 검증 범위다.
+service 배선(epoch 게이팅, D1→D3/D5 라우팅, 소멸 순서)까지 검증 범위다.
+M4: 재연결·diff 갭 시나리오에서 D5 INTERRUPTED가 결정적으로 발화하는지도 검증
+(PRD §13 "D5 replay 테스트: M3 픽스처 확장 — ... 상태기계 결정성 검증").
 """
 
 from decimal import Decimal
@@ -12,6 +14,7 @@ from order_monitor.config import load_config
 from order_monitor.detectors.d1 import D1Appeared
 from order_monitor.detectors.d3 import D3Absorption
 from order_monitor.detectors.d4 import D4Iceberg
+from order_monitor.detectors.d5 import D5Terminal, D5TerminalState
 from order_monitor.ingestion.events import Side
 
 from tests.replay.runner import load_fixture, replay
@@ -44,6 +47,15 @@ class TestReconnect:
         assert absorptions[0].absorbed_qty == Decimal("500")
         assert absorptions[0].registered_qty == Decimal("1500")
         assert absorptions[0].end_reason == "rebound"
+
+        # 단절 시점 활성이던 첫 인텐트(60%에 못 미친 20%)만 INTERRUPTED —
+        # 재개 후 두 번째 인텐트는 이 픽스처 끝까지 활성 유지(REALIZE_PCT 미도달)
+        interrupted = [
+            e for e in emitted if isinstance(e, D5Terminal) and e.state is D5TerminalState.INTERRUPTED
+        ]
+        assert len(interrupted) == 1
+        assert interrupted[0].level_realized_rate == Decimal("0.2")  # 300/1500, 단절 시점 누적
+        assert len(service.d5._intents) == 1  # 재개 후 인텐트는 종료 없이 활성 잔존
 
     def test_disconnect_marks_walls_unconfirmed_until_reconfirmed(self, tmp_path):
         service, _ = run("reconnect.jsonl", tmp_path)
@@ -93,6 +105,9 @@ class TestLiveCapture:
         appeared = [e for e in emitted if isinstance(e, D1Appeared)]
         assert len(appeared) == 1  # 캡처 중 실존한 1k+ BTC 벽의 지속 필터 통과
         assert [type(e).__name__ for e in emitted] == ["D1Appeared"]
+        # D5가 벽 APPEARED에서 인텐트를 등록했지만 60s 동안 그 가격에 체결이
+        # 없어 진행률/종국 이벤트 없음(위 golden과 일치) — 등록 자체만 확인
+        assert len(service.d5._intents) == 1
 
     def test_deterministic_same_input_same_output(self, tmp_path):
         _, first = run(self.FIXTURE, tmp_path, "a.db")
@@ -117,6 +132,15 @@ class TestDiffGap:
         assert not service.wall_registry.get(Side.BUY, Decimal("58000")).unconfirmed
         # 갭은 같은 이벤트 처리 내에서 새 epoch 시작 (M1 구현 노트)
         assert service.tracker.epoch_active
+
+        # 갭으로 인한 epoch 종료 시 유일 활성 인텐트가 INTERRUPTED — 재확인 억제로
+        # 재등록도 없어(위 APPEARED 1건 단언) 갭 이후 활성 인텐트는 0
+        interrupted = [
+            e for e in emitted if isinstance(e, D5Terminal) and e.state is D5TerminalState.INTERRUPTED
+        ]
+        assert len(interrupted) == 1
+        assert interrupted[0].level_realized_rate == Decimal("500") / Decimal("1500")
+        assert service.d5._intents == {}
 
     def test_deterministic_same_input_same_output(self, tmp_path):
         _, first = run("diff_gap.jsonl", tmp_path, "a.db")
