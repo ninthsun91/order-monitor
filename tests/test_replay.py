@@ -76,6 +76,30 @@ class TestStreamOrderInversion:
         assert first == second
 
 
+class TestLiveCapture:
+    """실캡처 픽스처 재생 (PRD §13 "합성 + 실캡처") — 2026-07-13 60s 캡처.
+
+    골든 값(벽 7개, D1 APPEARED 1건)은 캡처 시점 시장 상태의 고정 산물 —
+    픽스처가 불변이므로 판정 로직 회귀 감지에 쓴다 (scripts/capture_stream.py로
+    재캡처 시 골든도 재생성할 것).
+    """
+
+    FIXTURE = "live_btcusdt_60s.jsonl"
+
+    def test_replays_without_error_and_matches_golden(self, tmp_path):
+        service, emitted = run(self.FIXTURE, tmp_path)
+        assert service.tracker.epoch_active
+        assert len(service.wall_registry) == 7
+        appeared = [e for e in emitted if isinstance(e, D1Appeared)]
+        assert len(appeared) == 1  # 캡처 중 실존한 1k+ BTC 벽의 지속 필터 통과
+        assert [type(e).__name__ for e in emitted] == ["D1Appeared"]
+
+    def test_deterministic_same_input_same_output(self, tmp_path):
+        _, first = run(self.FIXTURE, tmp_path, "a.db")
+        _, second = run(self.FIXTURE, tmp_path, "b.db")
+        assert first == second
+
+
 class TestDiffGap:
     """U/u 갭 → 레지스트리 전체 unconfirmed + epoch 종료(진행 판정 폐기)·즉시 재개."""
 
