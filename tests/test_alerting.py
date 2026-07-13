@@ -11,7 +11,9 @@ from order_monitor.alerting.telegram import TelegramSender
 from order_monitor.config import load_config
 from order_monitor.detectors.d1 import D1Appeared, D1Attribution, D1Removed, D1Suppressed
 from order_monitor.detectors.d2 import D2BurstOnset, D2BurstSummary, D2Label, D2Verdict
+from order_monitor.detectors.d5 import D5Progress, D5Terminal, D5TerminalState
 from order_monitor.ingestion.events import Side
+from order_monitor.persistence.alerts_outbox import AlertsOutboxStore
 
 EXAMPLE_CONFIG = Path(__file__).resolve().parent.parent / "config.example.yaml"
 
@@ -27,9 +29,11 @@ class FakeClock:
 class FakeSender:
     def __init__(self):
         self.sent = []
+        self.on_sent_callbacks = []
 
-    def enqueue(self, text):
+    def enqueue(self, text, on_sent=None):
         self.sent.append(text)
+        self.on_sent_callbacks.append(on_sent)
 
 
 def make_config(**alert_overrides):
@@ -219,6 +223,158 @@ def test_different_bucket_not_suppressed_and_d2_has_no_cooldown():
     # D2는 시간 쿨다운 미적용 — 연속 온셋도 모두 발송 (에피소드 모델이 억제, PRD §9.2 v1.3)
     assert dispatcher.dispatch(onset()) is True
     assert dispatcher.dispatch(onset()) is True
+
+
+# ── D5 종국/진행률 (PRD §8 D5, §9.1, §9.4) ───────────────────
+
+
+def confirmed(intent_id=1, side=Side.BUY, price="106250", registered_qty="342", rate="0.68"):
+    return D5Terminal(
+        intent_id=intent_id,
+        side=side,
+        price=Decimal(price),
+        registered_qty=Decimal(registered_qty),
+        state=D5TerminalState.EXECUTION_CONFIRMED,
+        level_realized_rate=Decimal(rate),
+        above_realized_rate=Decimal(0),
+        registered_seconds=872.0,  # 14m 32s
+    )
+
+
+def inferred_above(intent_id=2, side=Side.BUY, price="106250", registered_qty="342", rate="0.64"):
+    return D5Terminal(
+        intent_id=intent_id,
+        side=side,
+        price=Decimal(price),
+        registered_qty=Decimal(registered_qty),
+        state=D5TerminalState.EXECUTION_INFERRED_ABOVE,
+        level_realized_rate=Decimal(0),
+        above_realized_rate=Decimal(rate),
+        registered_seconds=1325.0,  # 22m 05s
+    )
+
+
+def log_only_terminal(state, intent_id=3):
+    return D5Terminal(
+        intent_id=intent_id,
+        side=Side.BUY,
+        price=Decimal("61000"),
+        registered_qty=Decimal("1200"),
+        state=state,
+        level_realized_rate=Decimal("0.1"),
+        above_realized_rate=Decimal("0.05"),
+        registered_seconds=100.0,
+    )
+
+
+def progress(intent_id=1, series="case1", boundary="0.4", realized="138"):
+    return D5Progress(
+        intent_id=intent_id,
+        side=Side.BUY,
+        price=Decimal("106250"),
+        registered_qty=Decimal("342"),
+        series=series,
+        boundary_pct=Decimal(boundary),
+        realized_qty=Decimal(realized),
+    )
+
+
+def test_d5_confirmed_message_format():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender, clock=FakeClock(1783825200.0))
+    assert dispatcher.dispatch(confirmed()) is True
+    text = sender.sent[0]
+    assert "🟢 매수 의도 실체결 확인 (케이스 1)" in text
+    assert "의도 레벨: 106,250 (bid) · 표시 342 BTC" in text
+    assert "체결: 232.6 BTC (실현률 68%)" in text
+    assert "등록→확정: 14m 32s" in text
+    assert "발생:" in text and "KST" in text
+
+
+def test_d5_inferred_above_message_format():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender, clock=FakeClock(1783825200.0))
+    assert dispatcher.dispatch(inferred_above()) is True
+    text = sender.sent[0]
+    assert "🟡 매수 의도 상위 체결 추정 (케이스 2)" in text
+    assert "상위 구간 리필 확인 체결: 218.9 BTC (추정 실현률 64%)" in text
+    assert "등록→추정: 22m 05s" in text
+    assert "※ 추정 등급 — 체결 주체 귀속 불가 (공개 데이터 한계)" in text
+
+
+def test_d5_progress_message_format():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender)
+    assert dispatcher.dispatch(progress()) is True
+    text = sender.sent[0]
+    assert "🔵 매수 의도 흡수 진행 40% (케이스 1 계열)" in text
+    assert "의도 레벨: 106,250 (bid) · 표시 342 BTC" in text
+    assert "체결 누적: 138 BTC (실현률 40% 경계 도달)" in text
+
+
+def test_d5_log_only_terminal_states_are_never_sent():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender)
+    for state in (
+        D5TerminalState.PARTIALLY_EXECUTED,
+        D5TerminalState.INTENT_WITHDRAWN,
+        D5TerminalState.INTENT_EXPIRED,
+        D5TerminalState.INTERRUPTED,
+    ):
+        assert dispatcher.dispatch(log_only_terminal(state)) is False
+    assert sender.sent == []
+
+
+def test_d5_progress_gated_by_config_flag():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(send_d5_progress=False), sender)
+    assert dispatcher.dispatch(progress()) is False
+
+
+def test_d5_terminal_dedup_is_idempotent_not_cooldown():
+    clock = FakeClock()
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender, clock=clock)
+    assert dispatcher.dispatch(confirmed()) is True
+    clock.now = 999999.0  # 시간이 아무리 지나도 같은 (intent_id, state)는 재전송 안 됨
+    assert dispatcher.dispatch(confirmed()) is False
+    assert len(sender.sent) == 1
+
+
+def test_d5_progress_dedup_is_per_boundary():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender)
+    assert dispatcher.dispatch(progress(boundary="0.2")) is True
+    assert dispatcher.dispatch(progress(boundary="0.2")) is False  # 같은 경계 재발화 없음
+    assert dispatcher.dispatch(progress(boundary="0.4")) is True  # 다른 경계는 발화
+
+
+def test_d5_confirmed_records_to_outbox_and_marks_sent_on_delivery(tmp_path):
+    outbox = AlertsOutboxStore(tmp_path / "outbox.db")
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender, clock=FakeClock(1000.0), outbox=outbox)
+    dispatcher.dispatch(confirmed())
+    assert outbox.load_unsent() == [(1, sender.sent[0])]
+    outbox.close()
+
+
+def test_d5_confirmed_outbox_mark_sent_via_callback(tmp_path):
+    outbox = AlertsOutboxStore(tmp_path / "outbox.db")
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender, clock=FakeClock(1000.0), outbox=outbox)
+    dispatcher.dispatch(confirmed())
+    sender.on_sent_callbacks[0]()  # 발송 성공 시뮬레이션
+    assert outbox.load_unsent() == []
+    outbox.close()
+
+
+def test_d5_progress_does_not_use_outbox(tmp_path):
+    outbox = AlertsOutboxStore(tmp_path / "outbox.db")
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender, outbox=outbox)
+    dispatcher.dispatch(progress())
+    assert outbox.count() == 0
+    outbox.close()
 
 
 # ── Telegram 발송기 (PRD §9.2, §11.1) ────────────────────────
