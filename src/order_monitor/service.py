@@ -1,13 +1,19 @@
-"""파이프라인 배선 (PRD §6) — M3 범위: 수집 + 상태 + D1~D4 판정 + Telegram 알림.
+"""파이프라인 배선 (PRD §6) — M4 범위: 수집 + 상태 + D1~D5 판정 + Telegram 알림.
 
 디텍터 판정은 epoch 활성 중에만 수행하고(PRD §5.4 — 상태 적재는 계속),
-EpochEnded에서 D1 활성/후보·접촉 episode·D3 등록·D4 누적을 리셋한다.
-D3/D4는 알림 없이 로그 전용 (PRD §9.1 — DB events 테이블은 M6). D5는 M4.
+EpochEnded에서 D1 활성/후보·접촉 episode·D3 등록·D4 누적·D5 활성 인텐트를
+리셋한다. D3/D4는 알림 없이 로그 전용 (PRD §9.1 — DB events 테이블은 M6).
+D5 확정/추정 알림은 SQLite `alerts_outbox`(PRD §9.4)에 선기록 후 발송.
 모든 디텍터 이벤트는 발송 여부와 무관하게 구조화 로그로 남는다 (PRD §11.4).
 
 벽 소멸(diff tombstone/하한 미만) 시 배선 순서가 판정 정합성을 가른다:
 episode REMOVED 종료 → D3 확정 판정 (D1 등록이 아직 살아있어야 함) →
-D1 REMOVED 판정 → D1 이벤트를 D3 등록 해제로 라우팅.
+D1 REMOVED 판정 → D1 이벤트를 D3 등록 해제 + D5 소멸 평가로 라우팅.
+
+**EpochEnded 배선 순서 위험 (M4)**: `d5.reset()`은 반드시 `d4.reset()`보다
+먼저 호출한다 — D5의 INTERRUPTED 레코드가 D4의 lifetime 리필 조회
+(`sum_lifetime_refill_above`)에 의존하는데, `d4.reset()`이 먼저 돌면 그
+데이터가 이미 지워져 `above_realized_rate`가 항상 0으로 남는다.
 """
 
 from __future__ import annotations
@@ -34,12 +40,14 @@ from order_monitor.detectors.d1 import D1Appeared, D1Detector, D1Event, D1Remove
 from order_monitor.detectors.d2 import D2Detector
 from order_monitor.detectors.d3 import D3Detector
 from order_monitor.detectors.d4 import D4Detector
+from order_monitor.detectors.d5 import D5Detector
 from order_monitor.ingestion.baseline_bootstrap import BootstrapError, fetch_minute_volumes
 from order_monitor.ingestion.events import (
     AggTradeEvent,
     DepthSnapshot,
     DiffDepthEvent,
     Event,
+    Side,
 )
 from order_monitor.ingestion.health import (
     DiffListeningGap,
@@ -50,6 +58,7 @@ from order_monitor.ingestion.health import (
     StreamStale,
 )
 from order_monitor.ingestion.ws_client import BinanceWSClient
+from order_monitor.persistence.alerts_outbox import AlertsOutboxStore
 from order_monitor.persistence.walls import WallStore
 from order_monitor.state.level_tracker import LevelTracker
 from order_monitor.state.order_book import OrderBook
@@ -146,8 +155,20 @@ class MonitorService:
             iceberg_min_trades=config.thresholds.iceberg_min_trades,
             refill_window_ms=config.thresholds.refill_window_ms,
         )
+        self.d5 = D5Detector(
+            realize_pct=Decimal(str(config.thresholds.realize_pct)),
+            realize_pct_above=Decimal(str(config.thresholds.realize_pct_above)),
+            intent_ttl_seconds=config.thresholds.intent_ttl_seconds,
+            progress_step_pct=Decimal(str(config.thresholds.progress_step_pct)),
+            cum_traded_lookup=self._cum_traded_at_level,
+            refill_above_lookup=self._refill_above_lookup,
+            monotonic=monotonic,
+        )
         self.telegram = TelegramSender(telegram_token, config.telegram.chat_id)
-        self.dispatcher = AlertDispatcher(config, self.telegram, monotonic=monotonic)
+        self._outbox: AlertsOutboxStore | None = None
+        self.dispatcher = AlertDispatcher(
+            config, self.telegram, monotonic=monotonic, clock=clock, outbox=None
+        )
         self._store: WallStore | None = None
 
     def _cum_traded_at_level(self, side, price: Decimal) -> Decimal:
@@ -155,6 +176,11 @@ class MonitorService:
         # 이탈에도 엔트리가 보존되어 생애 누적이 유지된다 (§7 v1.4 예외)
         level = self.level_tracker.get(side, price)
         return level.cum_traded_at_level if level is not None else Decimal(0)
+
+    def _refill_above_lookup(self, side: Side, price: Decimal) -> Decimal:
+        # D5 케이스2 재료 — "현재가"는 같은 side의 best (§8 D5 결정, M4)
+        best = self.order_book.best_bid if side is Side.BUY else self.order_book.best_ask
+        return self.d4.sum_lifetime_refill_above(side, price, best)
 
     # ── 기동/종료 ──────────────────────────────────────────────
 
@@ -167,6 +193,15 @@ class MonitorService:
             self.wall_registry.mark_all_unconfirmed()
             self._store.mark_all_unconfirmed(since=self._clock())
         logger.info("wall registry restored", extra={"count": len(restored)})
+
+        # D5 확정/추정 알림 outbox (PRD §9.4) — 같은 db 파일에 별도 테이블
+        self._outbox = AlertsOutboxStore(self._db_path)
+        self.dispatcher.set_outbox(self._outbox)
+        unsent = self._outbox.load_unsent()
+        for rowid, text in unsent:
+            self.telegram.enqueue(text, on_sent=lambda rid=rowid: self._outbox.mark_sent(rid))
+        if unsent:
+            logger.info("unsent alerts requeued from outbox", extra={"count": len(unsent)})
 
     async def run(self) -> None:
         self.startup()
@@ -181,6 +216,8 @@ class MonitorService:
         finally:
             if self._store is not None:
                 self._store.close()
+            if self._outbox is not None:
+                self._outbox.close()
 
     async def _bootstrap_baseline(self) -> None:
         """D2 기준선 워밍업 (PRD §8 D2 v1.3) — 실패해도 기동은 계속, D2만 보류."""
@@ -226,6 +263,8 @@ class MonitorService:
                 )
                 for d4_event in self.d4.on_depth_snapshot(event, self.contact.active()):
                     self._emit(d4_event)
+                for d5_event in self.d5.evaluate():
+                    self._emit(d5_event)
         elif isinstance(event, AggTradeEvent):
             self.trade_window.add(event)
             self.level_tracker.record_trade(event)
@@ -236,6 +275,8 @@ class MonitorService:
                 self._handle_episode_ends(self.contact.on_trade(event))  # 체결가 관통
                 for d2_event in self.d2.on_trade(event):
                     self._emit(d2_event)
+                for d5_event in self.d5.evaluate():
+                    self._emit(d5_event)
         elif isinstance(event, DiffDepthEvent):
             removals = self.wall_registry.apply_diff(event)
             assert self._store is not None
@@ -281,6 +322,9 @@ class MonitorService:
                 # D2 에피소드 종료 판정 — 체결이 끊겨도 진행 (PRD §8 D2 v1.3)
                 for d2_event in self.d2.on_tick():
                     self._emit(d2_event)
+                # D5 TTL 만료 감지 — 체결/스냅샷 없어도 진행 (PRD §8 D5)
+                for d5_event in self.d5.evaluate():
+                    self._emit(d5_event)
 
     async def _wall_report_loop(self) -> None:
         """호가벽 정기 리포트 — 벽시계 정시 경계 발송, epoch 활성 중에만 (현재가는 depth 기반).
@@ -332,12 +376,16 @@ class MonitorService:
         self.dispatcher.dispatch(event)
 
     def _route_d1(self, event: D1Event) -> None:
-        """D1 이벤트 발신 + D3 등록 중개 (등록 크기 S = APPEARED 시점 qty)."""
+        """D1 이벤트 발신 + D3/D5 등록 중개 (등록 크기 S = APPEARED 시점 qty)."""
         self._emit(event)
         if isinstance(event, D1Appeared):
             self.d3.on_d1_appeared(event)
+            self.d5.on_d1_appeared(event)
         elif isinstance(event, D1Removed):
             self.d3.on_d1_removed(event)
+            d5_event = self.d5.on_d1_removed(event)
+            if d5_event is not None:
+                self._emit(d5_event)
 
     def _handle_episode_ends(self, ends: list[EpisodeEnd]) -> None:
         """접촉 episode 종료 → D3 확정 판정 발신 + D4 누적 리셋."""
@@ -354,14 +402,18 @@ class MonitorService:
                 logger.info("epoch started", extra={"epoch_id": notice.epoch_id})
             elif isinstance(notice, EpochEnded):
                 # 판정 전제 붕괴 — D1 활성/후보, D2 진행 중 에피소드, 접촉 episode·
-                # D3 등록·D4 누적 폐기 (PRD §5.4. trade_window·volume_baseline·
-                # D4 체결 버퍼는 상태 계층이라 유지)
+                # D3 등록·D4 누적·D5 활성 인텐트 폐기 (PRD §5.4. trade_window·
+                # volume_baseline·D4 체결 버퍼는 상태 계층이라 유지)
                 self.d1.reset()
                 if self.d2.episode_active:
                     logger.warning("d2 episode discarded on epoch end")
                 self.d2.reset()
                 self.contact.reset()
                 self.d3.reset()
+                # d5.reset()은 above_realized_rate 계산에 d4의 lifetime 리필을
+                # 읽으므로 d4.reset()보다 반드시 먼저 (모듈 docstring 배선 순서)
+                for d5_event in self.d5.reset():
+                    self._emit(d5_event)
                 self.d4.reset()
                 logger.warning(
                     "epoch ended",

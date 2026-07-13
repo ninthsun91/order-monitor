@@ -262,7 +262,9 @@ def test_d3_absorption_emitted_through_pipeline(tmp_path):
     assert len(d3_events) == 1
     assert d3_events[0].absorbed_qty == Decimal("400")
     assert d3_events[0].registered_qty == Decimal("1200")
-    assert svc.telegram.pending() == 0  # D3는 알림 없음 (PRD §9.1)
+    # D3 자신은 무발송이지만, 같은 400/1200(33%) 체결이 D5 진행률 20% 경계를
+    # 넘겨(M4 배선) 그건 발송된다 — D3의 무발송 자체는 별도로 확인
+    assert not any(svc.dispatcher.dispatch(e) for e in [d3_events[0]])
     svc._store.close()
 
 
@@ -317,3 +319,140 @@ def test_contact_episodes_not_opened_outside_epoch(service):
     service.on_connected()
     service.on_event(DEPTH, depth_event())  # epoch 미시작 (세 스트림 확인 전)
     assert service.contact.active() == {}
+
+
+# ── M4 배선: D5 상태기계 + outbox (PRD §8 D5, §9.4) ──────────
+
+
+def test_d5_case1_confirmed_through_pipeline_and_recorded_to_outbox(tmp_path):
+    from order_monitor.detectors.d1 import D1Appeared
+    from order_monitor.detectors.d5 import D5Terminal, D5TerminalState
+
+    svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
+    events = capture_emitted(svc)
+    start_feed(svc)  # 벽 60000/1200 등록
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))  # D1 평가 트리거 → APPEARED
+    assert any(isinstance(e, D1Appeared) for e in events)
+    # LevelTracker가 60000을 추적하도록 top-20 스냅샷으로 먼저 진입시킨다
+    svc.on_event(DEPTH, depth_event(bids=[("60000", "1200")], asks=[("60001", "1")], mono=1.0))
+
+    # 60000에서 720 BTC 체결 (720/1200 = 60% = REALIZE_PCT) → 케이스1 즉시 확정
+    svc.on_event(AGG, agg_at("60000", "720", mono=1.1))
+    confirmed = [
+        e for e in events if isinstance(e, D5Terminal) and e.state is D5TerminalState.EXECUTION_CONFIRMED
+    ]
+    assert len(confirmed) == 1
+    assert confirmed[0].level_realized_rate == Decimal("0.6")
+    assert svc.telegram.pending() == 1
+    unsent = svc._outbox.load_unsent()
+    assert len(unsent) == 1
+    assert "실체결 확인 (케이스 1)" in unsent[0][1]
+    svc._store.close()
+    svc._outbox.close()
+
+
+def test_d5_case2_inferred_above_through_pipeline(tmp_path):
+    from order_monitor.detectors.d5 import D5Terminal, D5TerminalState
+
+    svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
+    events = capture_emitted(svc)
+    start_feed(svc)  # 벽 60000/1200 등록
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))  # APPEARED
+
+    # 상위 구간(60000 초과 ~ best_bid) 레벨에서 리필 720 BTC 인정 → 케이스2(60%) 충족
+    # best_bid는 61000(start_feed의 depth 스냅샷) — 60500이 상위 구간 안에 위치
+    t = 1.0
+    for i in range(5):
+        svc.on_event(AGG, agg_at("60500", "144", mono=t, trade_id=100 + i))
+        svc.on_event(
+            DEPTH,
+            depth_event(bids=[("60500", "1000")], asks=[("61001", "1")], mono=t + 0.01),
+        )
+        svc.on_event(
+            DEPTH,
+            depth_event(bids=[("60500", "1144")], asks=[("61001", "1")], mono=t + 0.02),
+        )
+        t += 0.2
+    inferred = [
+        e
+        for e in events
+        if isinstance(e, D5Terminal) and e.state is D5TerminalState.EXECUTION_INFERRED_ABOVE
+    ]
+    assert len(inferred) == 1
+    assert inferred[0].above_realized_rate == Decimal("0.6")
+    svc._store.close()
+    svc._outbox.close()
+
+
+def test_d5_ttl_expiry_through_pipeline(tmp_path):
+    import dataclasses
+
+    from order_monitor.detectors.d5 import D5Terminal, D5TerminalState
+
+    config = config_with(persist_seconds=1e-9)
+    # staleness 임계를 TTL보다 훨씬 크게 잡아 monotonic 점프가 epoch 종료를
+    # 트리거하지 않게 한다 — 이 테스트는 D5 TTL 자체만 격리해서 본다
+    config = dataclasses.replace(
+        config,
+        watchdog=dataclasses.replace(config.watchdog, stale_seconds=1e9, trade_stale_seconds=1e9),
+    )
+    now = {"t": 0.0}
+    svc = MonitorService(
+        config,
+        db_path=tmp_path / "monitor.db",
+        telegram_token="test-token",
+        monotonic=lambda: now["t"],
+    )
+    svc.startup()
+    events = capture_emitted(svc)
+    start_feed(svc)
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
+    now["t"] = config.thresholds.intent_ttl_seconds
+    svc._handle_notices(svc.tracker.check_staleness())  # 틱 — 여기선 staleness 미발생
+    assert svc.tracker.epoch_active
+    for d5_event in svc.d5.evaluate():  # _staleness_loop이 epoch_active 시 호출하는 것과 동일
+        svc._emit(d5_event)
+    expired = [
+        e for e in events if isinstance(e, D5Terminal) and e.state is D5TerminalState.INTENT_EXPIRED
+    ]
+    assert len(expired) == 1
+    assert svc.telegram.pending() == 0  # 로그 전용 (PRD §9.1)
+    svc._store.close()
+
+
+def test_d5_interrupted_on_epoch_end_before_d4_reset(tmp_path):
+    from order_monitor.detectors.d5 import D5Terminal, D5TerminalState
+
+    svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
+    events = capture_emitted(svc)
+    start_feed(svc)
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))  # APPEARED — 인텐트 등록
+    svc.on_event(AGG, agg_at("60000", "100", mono=1.0))  # 미달 체결 — 활성 유지
+
+    svc.on_disconnected()  # epoch 종료
+    interrupted = [
+        e for e in events if isinstance(e, D5Terminal) and e.state is D5TerminalState.INTERRUPTED
+    ]
+    assert len(interrupted) == 1
+    assert svc.telegram.pending() == 0  # 로그 전용
+    assert svc.d5._intents == {}
+    svc._store.close()
+
+
+def test_outbox_unsent_alert_resent_on_restart(tmp_path):
+    config = config_with(persist_seconds=1e-9)
+
+    svc1 = make_service(config, tmp_path)
+    start_feed(svc1)
+    svc1.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
+    svc1.on_event(DEPTH, depth_event(bids=[("60000", "1200")], asks=[("60001", "1")], mono=1.0))
+    svc1.on_event(AGG, agg_at("60000", "720", mono=1.1))  # 케이스1 확정 — outbox 선기록
+    assert svc1._outbox.count() == 1
+    assert len(svc1._outbox.load_unsent()) == 1  # 발송 확인 전(Telegram 미구동)
+    svc1._store.close()
+    svc1._outbox.close()
+
+    svc2 = make_service(config, tmp_path)  # 재시작
+    assert svc2.telegram.pending() == 1  # 미발송 행이 재큐잉됨
+    svc2._store.close()
+    svc2._outbox.close()

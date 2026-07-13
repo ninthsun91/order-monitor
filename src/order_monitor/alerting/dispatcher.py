@@ -128,6 +128,10 @@ class AlertDispatcher:
         # D5 종국/진행률 dedup — 시간 쿨다운이 아닌 순수 멱등(재전송 안전용, PRD §9.2)
         self._d5_sent: set[tuple] = set()
 
+    def set_outbox(self, outbox: AlertsOutboxStore) -> None:
+        """outbox는 db_path 확정 후 `startup()`에서 열리므로 생성자 이후 별도 주입."""
+        self._outbox = outbox
+
     def dispatch(self, event: object) -> bool:
         """발송 큐 투입 여부를 반환한다. 미대상 이벤트(D1Suppressed 등)는 조용히 무시."""
         if isinstance(event, D1Appeared):
