@@ -220,3 +220,100 @@ def test_detector_judgment_suspended_outside_epoch(service):
     service.on_event(AGG, agg_event(qty="200"))
     assert len(service.trade_window) == 1
     assert service.telegram.pending() == 0
+
+
+# ── M3 배선: 접촉 episode + D3/D4 (PRD §8 D3/D4, §9.1 로그 전용) ──
+
+
+def capture_emitted(svc):
+    events = []
+    original = svc._emit
+    svc._emit = lambda event: (events.append(event), original(event))
+    return events
+
+
+def agg_at(price, qty, mono=0.0, trade_id=1):
+    return AggTradeEvent(
+        agg_trade_id=trade_id,
+        price=Decimal(price),
+        qty=Decimal(qty),
+        aggressor_side=Side.SELL,
+        exchange_time_ms=int(mono * 1000),
+        local_monotonic_receive_time=mono,
+    )
+
+
+def test_d3_absorption_emitted_through_pipeline(tmp_path):
+    from order_monitor.detectors.d1 import D1Appeared
+    from order_monitor.detectors.d3 import D3Absorption
+
+    svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
+    events = capture_emitted(svc)
+    start_feed(svc)  # 벽 60000/1200 등록
+    # 다음 diff가 D1 평가 트리거 → APPEARED (지속 필터 즉시 통과) → D3 등록 라우팅
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
+    assert any(isinstance(e, D1Appeared) for e in events)
+    # 접촉: best_bid가 60000까지 하락 → episode 시작, 체결 400 흡수 (33% ≥ 30%)
+    svc.on_event(DEPTH, depth_event(bids=[("60000", "1200")], asks=[("60001", "1")], mono=1.0))
+    svc.on_event(AGG, agg_at("60000", "400", mono=1.1))
+    # 반등 이탈 → episode 비관통 종료 → D3 확정 판정
+    svc.on_event(DEPTH, depth_event(bids=[("60500", "5")], asks=[("60501", "1")], mono=2.0))
+    d3_events = [e for e in events if isinstance(e, D3Absorption)]
+    assert len(d3_events) == 1
+    assert d3_events[0].absorbed_qty == Decimal("400")
+    assert d3_events[0].registered_qty == Decimal("1200")
+    assert svc.telegram.pending() == 0  # D3는 알림 없음 (PRD §9.1)
+    svc._store.close()
+
+
+def test_d3_pierced_episode_silent_through_pipeline(tmp_path):
+    from order_monitor.detectors.d3 import D3Absorption
+
+    svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
+    events = capture_emitted(svc)
+    start_feed(svc)
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
+    svc.on_event(DEPTH, depth_event(bids=[("60000", "1200")], asks=[("60001", "1")], mono=1.0))
+    svc.on_event(AGG, agg_at("60000", "400", mono=1.1))
+    svc.on_event(AGG, agg_at("59999", "1", mono=1.2, trade_id=2))  # 체결가 관통 (주 신호)
+    svc.on_event(DEPTH, depth_event(bids=[("60500", "5")], asks=[("60501", "1")], mono=2.0))
+    assert [e for e in events if isinstance(e, D3Absorption)] == []
+    svc._store.close()
+
+
+def test_d4_iceberg_emitted_through_pipeline(service):
+    from order_monitor.detectors.d4 import D4Iceberg
+
+    events = capture_emitted(service)
+    start_feed(service)
+    # best bid 61000에서 체결→소진→회복 사이클 5회 (리필 10×5 ≥ 20, 쌍 5 ≥ 5)
+    t = 1.0
+    for i in range(5):
+        service.on_event(AGG, agg_at("61000", "10", mono=t, trade_id=i + 10))
+        service.on_event(
+            DEPTH, depth_event(bids=[("61000", "90")], asks=[("61001", "1")], mono=t + 0.05)
+        )
+        service.on_event(
+            DEPTH, depth_event(bids=[("61000", "100")], asks=[("61001", "1")], mono=t + 0.1)
+        )
+        t += 0.2
+    d4_events = [e for e in events if isinstance(e, D4Iceberg)]
+    assert len(d4_events) == 1
+    assert d4_events[0].refill_added == Decimal("50")
+    assert service.telegram.pending() == 0  # D4는 알림 없음 (PRD §9.1)
+
+
+def test_epoch_end_resets_contact_and_d3_d4(service):
+    start_feed(service)
+    service.on_event(DEPTH, depth_event(bids=[("61000", "100")], asks=[("61001", "1")], mono=1.0))
+    assert service.contact.active()
+    service.on_disconnected()  # epoch 종료
+    assert service.contact.active() == {}
+    assert service.d3._registered == {}
+    assert service.d4._acc == {}
+
+
+def test_contact_episodes_not_opened_outside_epoch(service):
+    service.on_connected()
+    service.on_event(DEPTH, depth_event())  # epoch 미시작 (세 스트림 확인 전)
+    assert service.contact.active() == {}

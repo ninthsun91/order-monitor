@@ -1,8 +1,13 @@
-"""파이프라인 배선 (PRD §6) — M2 범위: 수집 + 상태 + D1/D2 판정 + Telegram 알림.
+"""파이프라인 배선 (PRD §6) — M3 범위: 수집 + 상태 + D1~D4 판정 + Telegram 알림.
 
 디텍터 판정은 epoch 활성 중에만 수행하고(PRD §5.4 — 상태 적재는 계속),
-EpochEnded에서 D1 활성/후보를 리셋한다. D3~D5(M3/M4)·워치독 알림(M5)은 아직 없다.
+EpochEnded에서 D1 활성/후보·접촉 episode·D3 등록·D4 누적을 리셋한다.
+D3/D4는 알림 없이 로그 전용 (PRD §9.1 — DB events 테이블은 M6). D5는 M4.
 모든 디텍터 이벤트는 발송 여부와 무관하게 구조화 로그로 남는다 (PRD §11.4).
+
+벽 소멸(diff tombstone/하한 미만) 시 배선 순서가 판정 정합성을 가른다:
+episode REMOVED 종료 → D3 확정 판정 (D1 등록이 아직 살아있어야 함) →
+D1 REMOVED 판정 → D1 이벤트를 D3 등록 해제로 라우팅.
 """
 
 from __future__ import annotations
@@ -19,8 +24,15 @@ from order_monitor.alerting.dispatcher import AlertDispatcher
 from order_monitor.alerting.telegram import TelegramSender
 from order_monitor.alerting.wall_report import format_wall_report
 from order_monitor.config import AppConfig
-from order_monitor.detectors.d1 import D1Detector
+from order_monitor.detectors.contact import (
+    ContactEpisodeTracker,
+    EpisodeEnd,
+    EpisodeEndReason,
+)
+from order_monitor.detectors.d1 import D1Appeared, D1Detector, D1Event, D1Removed
 from order_monitor.detectors.d2 import D2Detector
+from order_monitor.detectors.d3 import D3Detector
+from order_monitor.detectors.d4 import D4Detector
 from order_monitor.ingestion.baseline_bootstrap import BootstrapError, fetch_minute_volumes
 from order_monitor.ingestion.events import (
     AggTradeEvent,
@@ -107,6 +119,18 @@ class MonitorService:
             window=self.trade_window,
             baseline=self.volume_baseline,
         )
+        self.contact = ContactEpisodeTracker(
+            pierce_persist_snapshots=config.thresholds.pierce_persist_snapshots
+        )
+        self.d3 = D3Detector(
+            absorption_min_pct=Decimal(str(config.thresholds.absorption_min_pct)),
+            cum_traded_lookup=self._cum_traded_at_level,
+        )
+        self.d4 = D4Detector(
+            iceberg_margin=Decimal(str(config.thresholds.iceberg_margin_btc)),
+            iceberg_min_trades=config.thresholds.iceberg_min_trades,
+            refill_window_ms=config.thresholds.refill_window_ms,
+        )
         self.telegram = TelegramSender(telegram_token, config.telegram.chat_id)
         self.dispatcher = AlertDispatcher(config, self.telegram)
         self._store: WallStore | None = None
@@ -177,12 +201,24 @@ class MonitorService:
         if isinstance(event, DepthSnapshot):
             self.order_book.apply_snapshot(event)
             self.level_tracker.apply_snapshot(event)
+            if self.tracker.epoch_active:
+                self._handle_episode_ends(
+                    self.contact.on_depth_snapshot(
+                        self.order_book.best_bid,
+                        self.order_book.best_ask,
+                        event.local_monotonic_receive_time,
+                    )
+                )
+                for d4_event in self.d4.on_depth_snapshot(event, self.contact.active()):
+                    self._emit(d4_event)
         elif isinstance(event, AggTradeEvent):
             self.trade_window.add(event)
             self.level_tracker.record_trade(event)
+            self.d4.on_trade(event)  # 체결 버퍼는 상태 적재 성격 — epoch 게이트 밖
             self.volume_baseline.add(event.exchange_time_ms, event.qty)
             # 판정은 epoch 활성 중에만 — 상태 적재는 위에서 이미 수행 (PRD §5.4)
             if self.tracker.epoch_active:
+                self._handle_episode_ends(self.contact.on_trade(event))  # 체결가 관통
                 for d2_event in self.d2.on_trade(event):
                     self._emit(d2_event)
         elif isinstance(event, DiffDepthEvent):
@@ -201,10 +237,21 @@ class MonitorService:
                     },
                 )
             if self.tracker.epoch_active:
+                # 소멸 레벨의 episode를 먼저 REMOVED 종료 — D3 확정 판정은 D1 등록
+                # 해제(아래 라우팅) 전에 이뤄져야 한다 (모듈 docstring 배선 순서)
+                for removal in removals:
+                    end = self.contact.end_episode(
+                        removal.wall.side,
+                        removal.wall.price,
+                        EpisodeEndReason.REMOVED,
+                        event.local_monotonic_receive_time,
+                    )
+                    if end is not None:
+                        self._handle_episode_ends([end])
                 for d1_event in self.d1.on_removals(removals):
-                    self._emit(d1_event)
+                    self._route_d1(d1_event)
                 for d1_event in self.d1.evaluate(self.wall_registry.walls()):
-                    self._emit(d1_event)
+                    self._route_d1(d1_event)
 
     # ── 주기 작업 ──────────────────────────────────────────────
 
@@ -215,7 +262,7 @@ class MonitorService:
             # D1 지속 타이머 게이트 — diff 이벤트가 안 와도 PERSIST 경과로 발화 (PRD §8 D1)
             if self.tracker.epoch_active:
                 for d1_event in self.d1.evaluate(self.wall_registry.walls()):
-                    self._emit(d1_event)
+                    self._route_d1(d1_event)
                 # D2 에피소드 종료 판정 — 체결이 끊겨도 진행 (PRD §8 D2 v1.3)
                 for d2_event in self.d2.on_tick():
                     self._emit(d2_event)
@@ -269,6 +316,21 @@ class MonitorService:
         logger.info("detector event", extra=_event_log_fields(event))
         self.dispatcher.dispatch(event)
 
+    def _route_d1(self, event: D1Event) -> None:
+        """D1 이벤트 발신 + D3 등록 중개 (등록 크기 S = APPEARED 시점 qty)."""
+        self._emit(event)
+        if isinstance(event, D1Appeared):
+            self.d3.on_d1_appeared(event)
+        elif isinstance(event, D1Removed):
+            self.d3.on_d1_removed(event)
+
+    def _handle_episode_ends(self, ends: list[EpisodeEnd]) -> None:
+        """접촉 episode 종료 → D3 확정 판정 발신 + D4 누적 리셋."""
+        for end in ends:
+            for d3_event in self.d3.on_episode_end(end):
+                self._emit(d3_event)
+            self.d4.on_episode_end(end)
+
     # ── 헬스/epoch 통지 처리 ───────────────────────────────────
 
     def _handle_notices(self, notices: list[Notice]) -> None:
@@ -276,12 +338,16 @@ class MonitorService:
             if isinstance(notice, EpochStarted):
                 logger.info("epoch started", extra={"epoch_id": notice.epoch_id})
             elif isinstance(notice, EpochEnded):
-                # 판정 전제 붕괴 — D1 활성/후보, D2 진행 중 에피소드 폐기 (PRD §5.4.
-                # trade_window·volume_baseline은 상태 계층이라 유지)
+                # 판정 전제 붕괴 — D1 활성/후보, D2 진행 중 에피소드, 접촉 episode·
+                # D3 등록·D4 누적 폐기 (PRD §5.4. trade_window·volume_baseline·
+                # D4 체결 버퍼는 상태 계층이라 유지)
                 self.d1.reset()
                 if self.d2.episode_active:
                     logger.warning("d2 episode discarded on epoch end")
                 self.d2.reset()
+                self.contact.reset()
+                self.d3.reset()
+                self.d4.reset()
                 logger.warning(
                     "epoch ended",
                     extra={"epoch_id": notice.epoch_id, "reason": notice.reason},
