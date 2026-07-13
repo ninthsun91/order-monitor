@@ -34,7 +34,6 @@ class ThresholdsConfig:
     refill_window_ms: int
     realize_pct: float
     realize_pct_above: float
-    intent_ttl_seconds: float
     progress_step_pct: float
 
 

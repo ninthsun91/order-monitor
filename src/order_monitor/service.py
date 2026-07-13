@@ -158,7 +158,6 @@ class MonitorService:
         self.d5 = D5Detector(
             realize_pct=Decimal(str(config.thresholds.realize_pct)),
             realize_pct_above=Decimal(str(config.thresholds.realize_pct_above)),
-            intent_ttl_seconds=config.thresholds.intent_ttl_seconds,
             progress_step_pct=Decimal(str(config.thresholds.progress_step_pct)),
             cum_traded_lookup=self._cum_traded_at_level,
             refill_above_lookup=self._refill_above_lookup,
@@ -320,11 +319,10 @@ class MonitorService:
                 for d1_event in self.d1.evaluate(self.wall_registry.walls()):
                     self._route_d1(d1_event)
                 # D2 에피소드 종료 판정 — 체결이 끊겨도 진행 (PRD §8 D2 v1.3)
+                # (D5는 여기서 호출 안 함 — TTL 폐지(PRD v1.5) 후 시간 경과만으로
+                # 바뀌는 판정이 없고, 실현률은 체결/스냅샷 이벤트 경로가 갱신)
                 for d2_event in self.d2.on_tick():
                     self._emit(d2_event)
-                # D5 TTL 만료 감지 — 체결/스냅샷 없어도 진행 (PRD §8 D5)
-                for d5_event in self.d5.evaluate():
-                    self._emit(d5_event)
 
     async def _wall_report_loop(self) -> None:
         """호가벽 정기 리포트 — 벽시계 정시 경계 발송, epoch 활성 중에만 (현재가는 depth 기반).

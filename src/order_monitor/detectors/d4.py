@@ -17,8 +17,8 @@ peak/current 두 값 산식은 폐기됨 (경로가 다른데 결과값이 같�
 
 **lifetime 리필 누적 (M4, PRD §8 D5 케이스2 재료)**: episode 종료로 지워지는
 `_acc`와 별개로, 같은 인정 리필 델타를 episode 경계 없이 누적하는
-`_lifetime_refill`을 병행 유지한다 — D5 케이스2는 인텐트 등록부터 최대
-`intent_ttl_seconds`(30분)에 걸쳐 상위 구간의 여러 레벨·여러 접촉 episode를
+`_lifetime_refill`을 병행 유지한다 — D5 케이스2는 인텐트(수명 = 벽 수명,
+PRD v1.5)의 전 생애에 걸쳐 상위 구간의 여러 레벨·여러 접촉 episode를
 넘나드는 누적이 필요하기 때문. epoch 종료(`reset()`)에서만 지운다.
 """
 

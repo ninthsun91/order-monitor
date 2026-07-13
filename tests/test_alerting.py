@@ -318,7 +318,6 @@ def test_d5_log_only_terminal_states_are_never_sent():
     for state in (
         D5TerminalState.PARTIALLY_EXECUTED,
         D5TerminalState.INTENT_WITHDRAWN,
-        D5TerminalState.INTENT_EXPIRED,
         D5TerminalState.INTERRUPTED,
     ):
         assert dispatcher.dispatch(log_only_terminal(state)) is False

@@ -41,7 +41,6 @@ _D5_LOG_ONLY_STATES = frozenset(
     {
         D5TerminalState.PARTIALLY_EXECUTED,
         D5TerminalState.INTENT_WITHDRAWN,
-        D5TerminalState.INTENT_EXPIRED,
         D5TerminalState.INTERRUPTED,
     }
 )

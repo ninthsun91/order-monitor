@@ -384,14 +384,14 @@ def test_d5_case2_inferred_above_through_pipeline(tmp_path):
     svc._outbox.close()
 
 
-def test_d5_ttl_expiry_through_pipeline(tmp_path):
+def test_d5_intent_survives_long_after_registration(tmp_path):
+    # PRD v1.5 (TTL 폐지): 등록 한참 뒤(구 TTL의 수십 배) 도달해도 케이스1 판정 성립
     import dataclasses
 
     from order_monitor.detectors.d5 import D5Terminal, D5TerminalState
 
     config = config_with(persist_seconds=1e-9)
-    # staleness 임계를 TTL보다 훨씬 크게 잡아 monotonic 점프가 epoch 종료를
-    # 트리거하지 않게 한다 — 이 테스트는 D5 TTL 자체만 격리해서 본다
+    # monotonic 점프가 staleness로 epoch를 끊지 않게 임계를 크게 — 인텐트 수명만 격리
     config = dataclasses.replace(
         config,
         watchdog=dataclasses.replace(config.watchdog, stale_seconds=1e9, trade_stale_seconds=1e9),
@@ -406,17 +406,16 @@ def test_d5_ttl_expiry_through_pipeline(tmp_path):
     svc.startup()
     events = capture_emitted(svc)
     start_feed(svc)
-    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
-    now["t"] = config.thresholds.intent_ttl_seconds
-    svc._handle_notices(svc.tracker.check_staleness())  # 틱 — 여기선 staleness 미발생
-    assert svc.tracker.epoch_active
-    for d5_event in svc.d5.evaluate():  # _staleness_loop이 epoch_active 시 호출하는 것과 동일
-        svc._emit(d5_event)
-    expired = [
-        e for e in events if isinstance(e, D5Terminal) and e.state is D5TerminalState.INTENT_EXPIRED
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))  # APPEARED — 인텐트 등록
+
+    now["t"] = 83114.0  # 실측 61k 벽 지속시간 — 등록 23h 뒤 가격 도달 시나리오
+    svc.on_event(DEPTH, depth_event(bids=[("60000", "1200")], asks=[("60001", "1")], mono=83114.0))
+    svc.on_event(AGG, agg_at("60000", "720", mono=83114.1))
+    confirmed = [
+        e for e in events if isinstance(e, D5Terminal) and e.state is D5TerminalState.EXECUTION_CONFIRMED
     ]
-    assert len(expired) == 1
-    assert svc.telegram.pending() == 0  # 로그 전용 (PRD §9.1)
+    assert len(confirmed) == 1
+    assert confirmed[0].registered_seconds >= 83114.0
     svc._store.close()
 
 

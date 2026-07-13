@@ -42,7 +42,6 @@ def make_detector(
     above: dict | None = None,
     realize_pct="0.6",
     realize_pct_above="0.6",
-    ttl=1800.0,
     step="0.2",
 ):
     cum = cum if cum is not None else {}
@@ -50,7 +49,6 @@ def make_detector(
     return D5Detector(
         realize_pct=Decimal(realize_pct),
         realize_pct_above=Decimal(realize_pct_above),
-        intent_ttl_seconds=ttl,
         progress_step_pct=Decimal(step),
         cum_traded_lookup=lambda side, price: cum.get((side, price), Decimal(0)),
         refill_above_lookup=lambda side, price: above.get((side, price), Decimal(0)),
@@ -186,31 +184,33 @@ class TestDissolution:
         assert event.above_realized_rate == Decimal("0.1")
 
 
-# ── TTL 만료 ──────────────────────────────────────────────────
+# ── 무만료 — 인텐트 수명 = 벽 수명 (PRD v1.5, TTL 폐지) ───────
 
 
-class TestTTL:
-    def test_expires_after_ttl_with_no_transition(self):
+class TestNoExpiry:
+    def test_intent_survives_arbitrarily_long_without_transition(self):
+        # 실측 사각지대 시나리오의 역: 등록 23h+ 뒤에 도달해도 판정 가능해야 한다
         clock = FakeClock(0.0)
-        d5 = make_detector(clock, ttl=1800.0)
+        cum = {}
+        d5 = make_detector(clock, cum=cum)
         d5.on_d1_appeared(appeared())
-        clock.now = 1799.0
-        assert d5.evaluate() == []
-        clock.now = 1800.0
-        events = d5.evaluate()
-        assert len(events) == 1
-        assert events[0].state is D5TerminalState.INTENT_EXPIRED
-        assert events[0].registered_seconds == 1800.0
-
-    def test_ttl_check_yields_to_case1_if_also_crossed(self):
-        clock = FakeClock(0.0)
-        cum = {(Side.BUY, Decimal("61000")): Decimal("720")}
-        d5 = make_detector(clock, cum=cum, ttl=1800.0)
-        d5.on_d1_appeared(appeared())
-        clock.now = 1800.0
+        clock.now = 83114.0  # 실측 61k 벽 지속시간 — 구 TTL(1800s)의 46배
+        assert d5.evaluate() == []  # 만료 없이 활성 유지
+        cum[(Side.BUY, Decimal("61000"))] = Decimal("720")  # 뒤늦은 도달+흡수
         events = d5.evaluate()
         assert len(events) == 1
         assert events[0].state is D5TerminalState.EXECUTION_CONFIRMED
+        assert events[0].registered_seconds == 83114.0
+
+    def test_late_removal_still_judged(self):
+        # 등록 한참 뒤 벽 소진 소멸 — 인텐트가 살아있어 4분류 평가가 성립
+        clock = FakeClock(0.0)
+        cum = {(Side.BUY, Decimal("61000")): Decimal("300")}
+        d5 = make_detector(clock, cum=cum)
+        d5.on_d1_appeared(appeared())
+        clock.now = 90000.0
+        event = d5.on_d1_removed(removed(attribution=D1Attribution.FILLED))
+        assert event.state is D5TerminalState.PARTIALLY_EXECUTED
 
 
 # ── epoch 종료 → INTERRUPTED ──────────────────────────────────

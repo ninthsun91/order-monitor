@@ -14,7 +14,11 @@
 - **소멸(D1 REMOVED) 시 즉시 종국 평가**, 4분류 우선순위: 케이스1 재확인 →
   케이스2 재확인(PULLED 시 먼저 평가) → D1 FILLED 귀속+케이스1 미달=
   PARTIALLY_EXECUTED(로그만) → D1 PULLED 귀속+케이스2 미달=INTENT_WITHDRAWN(로그만).
-- **TTL(`intent_ttl_seconds`) 무전이 → INTENT_EXPIRED**(로그만).
+- **인텐트는 만료되지 않는다 — 수명 = 벽 수명 (PRD v1.5, TTL 폐지)**: 구
+  INTENT_TTL은 기산점이 등록 시점이라 원거리 상시 벽(실측 61k bid, 지속 23h+)이
+  하루 대부분 인텐트 부재 사각지대에 놓였고, 그 사이 벽이 전량 소진되면 D1
+  latch 탓에 재등록 경로가 없어 핵심 알림이 영영 누락됐다. 메모리는 벽
+  희소성(SIZE_THRESHOLD) + `MAX_ACTIVE_INTENTS`로 바운드.
 - **epoch 종료 → 활성 인텐트 전부 INTERRUPTED**(로그만, 우선순위 무시 즉시 —
   `reset()`이 이벤트를 반환하는 이유. 호출자는 D4의 lifetime 리필이 지워지기
   전에 이걸 먼저 호출해야 한다 — service.py 배선 순서 참고).
@@ -52,7 +56,6 @@ class D5TerminalState(enum.Enum):
     EXECUTION_INFERRED_ABOVE = "execution_inferred_above"
     PARTIALLY_EXECUTED = "partially_executed"
     INTENT_WITHDRAWN = "intent_withdrawn"
-    INTENT_EXPIRED = "intent_expired"
     INTERRUPTED = "interrupted"
 
 
@@ -60,7 +63,6 @@ _LOG_ONLY_STATES = frozenset(
     {
         D5TerminalState.PARTIALLY_EXECUTED,
         D5TerminalState.INTENT_WITHDRAWN,
-        D5TerminalState.INTENT_EXPIRED,
         D5TerminalState.INTERRUPTED,
     }
 )
@@ -109,7 +111,6 @@ class D5Detector:
         *,
         realize_pct: Decimal,
         realize_pct_above: Decimal,
-        intent_ttl_seconds: float,
         progress_step_pct: Decimal,
         cum_traded_lookup: Callable[[Side, Decimal], Decimal],
         refill_above_lookup: Callable[[Side, Decimal], Decimal],
@@ -117,7 +118,6 @@ class D5Detector:
     ) -> None:
         self._realize_pct = realize_pct
         self._realize_pct_above = realize_pct_above
-        self._intent_ttl_seconds = intent_ttl_seconds
         self._progress_step_pct = progress_step_pct
         self._cum_traded = cum_traded_lookup
         self._refill_above = refill_above_lookup
@@ -161,9 +161,8 @@ class D5Detector:
         return self._finalize(intent, D5TerminalState.INTENT_WITHDRAWN, level_rate, above_rate)
 
     def evaluate(self) -> list[D5Event]:
-        """체결/스냅샷/주기 틱마다 호출 — 케이스1/2 즉시 발화, 진행률, TTL."""
+        """체결/스냅샷마다 호출 — 케이스1/2 즉시 발화 + 진행률 경계."""
         events: list[D5Event] = []
-        now = self._monotonic()
         for key, intent in list(self._intents.items()):
             level_rate = self._level_rate(intent)
             if level_rate >= self._realize_pct:
@@ -181,11 +180,6 @@ class D5Detector:
 
             events += self._progress_events(intent, "case1", level_rate, self._realize_pct)
             events += self._progress_events(intent, "case2", above_rate, self._realize_pct_above)
-
-            if now - intent.registered_at >= self._intent_ttl_seconds:
-                events.append(
-                    self._finalize(intent, D5TerminalState.INTENT_EXPIRED, level_rate, above_rate)
-                )
         return events
 
     def reset(self) -> list[D5Terminal]:
