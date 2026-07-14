@@ -1,0 +1,13 @@
+# /etc/systemd/system/order-monitor-watchdog.timer
+# 설치: systemctl enable --now order-monitor-watchdog.timer (RUNBOOK §4)
+
+[Unit]
+Description=Run order-monitor watchdog check every 60s
+
+[Timer]
+# 부팅 직후 기동 유예 — 서비스가 첫 하트비트를 쓰기 전 오탐 방지
+OnBootSec=2min
+OnUnitActiveSec=60s
+
+[Install]
+WantedBy=timers.target

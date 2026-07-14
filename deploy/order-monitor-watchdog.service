@@ -1,0 +1,11 @@
+# /etc/systemd/system/order-monitor-watchdog.service
+# 외부 경량 워치독 1회 점검 — order-monitor-watchdog.timer가 60s 주기로 구동
+# (PRD §11.1 PROCESS_DOWN — 설치 절차는 deploy/RUNBOOK.md §4)
+
+[Unit]
+Description=order-monitor process watchdog (heartbeat check)
+
+[Service]
+Type=oneshot
+# 시스템 python3 (앱 venv 미사용 — venv가 깨져도 동작해야 하는 최후 방어선)
+ExecStart=/usr/bin/python3 /opt/order-monitor/deploy/watchdog_check.py
