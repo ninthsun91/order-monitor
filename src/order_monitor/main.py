@@ -17,6 +17,7 @@ def main() -> None:
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--log-file", default="order_monitor.log")
     parser.add_argument("--db-file", default="order_monitor.db")
+    parser.add_argument("--heartbeat-file", default="order_monitor.heartbeat")
     args = parser.parse_args()
 
     # 토큰은 환경변수로만 주입 (PRD §9.3). 없으면 기동 거부 — 알림 없는 조용한
@@ -32,7 +33,12 @@ def main() -> None:
         extra={"symbol": config.symbol},
     )
 
-    service = MonitorService(config, db_path=args.db_file, telegram_token=telegram_token)
+    service = MonitorService(
+        config,
+        db_path=args.db_file,
+        telegram_token=telegram_token,
+        heartbeat_path=args.heartbeat_file,
+    )
     try:
         asyncio.run(service.run())
     except KeyboardInterrupt:

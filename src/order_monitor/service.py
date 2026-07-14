@@ -67,6 +67,7 @@ from order_monitor.state.order_book import OrderBook
 from order_monitor.state.trade_window import TradeWindow
 from order_monitor.state.volume_baseline import VolumeBaseline
 from order_monitor.state.wall_registry import WallRegistry
+from order_monitor.watchdog.heartbeat import write_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +91,14 @@ class MonitorService:
         db_path: str | Path,
         *,
         telegram_token: str,
+        heartbeat_path: str | Path = "order_monitor.heartbeat",
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         # 클록 주입은 결정적 replay 테스트용 (PRD §13) — 운영은 기본값
         self._config = config
         self._db_path = db_path
+        self._heartbeat_path = Path(heartbeat_path)
         self._clock = clock
 
         self.order_book = OrderBook()
@@ -208,6 +211,7 @@ class MonitorService:
                 group.create_task(self._staleness_loop())
                 group.create_task(self._prune_loop())
                 group.create_task(self._wall_report_loop())
+                group.create_task(self._heartbeat_loop())
                 group.create_task(self.telegram.run())
         finally:
             if self._store is not None:
@@ -347,6 +351,20 @@ class MonitorService:
             size_threshold=Decimal(str(self._config.thresholds.size_threshold_btc)),
             now_epoch_seconds=self._clock(),
         )
+
+    async def _heartbeat_loop(self) -> None:
+        """프로세스 하트비트 (PRD §11.1) — 이벤트 루프 생존 신호.
+
+        외부 워치독(deploy/watchdog_check.py)이 이 파일의 mtime 나이로 행을
+        감지한다. 기록 실패는 파이프라인을 죽이지 않는다 — 하트비트가 stale로
+        남으면 외부 워치독이 PROCESS_DOWN으로 승격하는 것이 에스컬레이션 경로.
+        """
+        while True:
+            try:
+                write_heartbeat(self._heartbeat_path)
+            except OSError as exc:
+                logger.warning("heartbeat write failed", extra={"error": str(exc)})
+            await asyncio.sleep(self._config.watchdog.heartbeat_interval)
 
     async def _prune_loop(self) -> None:
         while True:

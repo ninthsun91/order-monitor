@@ -16,7 +16,8 @@ EnvironmentFile=/etc/order-monitor/env
 ExecStart=/opt/order-monitor/.venv/bin/order-monitor \
     --config /opt/order-monitor/config.yaml \
     --log-file /var/lib/order-monitor/order_monitor.log \
-    --db-file /var/lib/order-monitor/order_monitor.db
+    --db-file /var/lib/order-monitor/order_monitor.db \
+    --heartbeat-file /var/lib/order-monitor/heartbeat
 Restart=always
 RestartSec=5
 
