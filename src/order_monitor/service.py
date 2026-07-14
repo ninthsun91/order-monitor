@@ -1,19 +1,22 @@
 """파이프라인 배선 (PRD §6) — M4 범위: 수집 + 상태 + D1~D5 판정 + Telegram 알림.
 
 디텍터 판정은 epoch 활성 중에만 수행하고(PRD §5.4 — 상태 적재는 계속),
-EpochEnded에서 D1 활성/후보·접촉 episode·D3 등록·D4 누적·D5 활성 인텐트를
-리셋한다. D3/D4는 알림 없이 로그 전용 (PRD §9.1 — DB events 테이블은 M6).
-D5 확정/추정 알림은 SQLite `alerts_outbox`(PRD §9.4)에 선기록 후 발송.
+EpochEnded에서 D1 활성/후보·접촉 episode·D3 등록·D5 활성 인텐트를
+리셋한다. D3는 알림 없이 로그 전용 (PRD §9.1 — DB events 테이블은 M6).
+D5 확정 알림은 SQLite `alerts_outbox`(PRD §9.4)에 선기록 후 발송.
 모든 디텍터 이벤트는 발송 여부와 무관하게 구조화 로그로 남는다 (PRD §11.4).
+
+**D4·케이스2 임시 비활성 (PRD v1.6, 2026-07-15)**: D4(아이스버그/리필)와
+그걸 재료로 쓰는 D5 케이스2는 배선에서 제외됐다 — 실전 조율 단계에서
+D1/D2/D3+케이스1(확정 등급)만 운용하고, D4 방식(리필 페어링 vs 체결량-잔량
+대조)은 표본이 쌓인 뒤 재설계 논의 후 재배선한다(DEVELOPMENT_PLAN 결정 기록).
+`refill_above_lookup`이 상수 0을 반환하므로 케이스2 발화·진행률·인텐트 소모가
+구조적으로 불가능하다 — 인텐트는 벽 소멸/epoch 종료까지 살아 케이스1만 감시.
+`detectors/d4.py` 모듈·단위 테스트는 재논의 기반으로 보존.
 
 벽 소멸(diff tombstone/하한 미만) 시 배선 순서가 판정 정합성을 가른다:
 episode REMOVED 종료 → D3 확정 판정 (D1 등록이 아직 살아있어야 함) →
 D1 REMOVED 판정 → D1 이벤트를 D3 등록 해제 + D5 소멸 평가로 라우팅.
-
-**EpochEnded 배선 순서 위험 (M4)**: `d5.reset()`은 반드시 `d4.reset()`보다
-먼저 호출한다 — D5의 INTERRUPTED 레코드가 D4의 lifetime 리필 조회
-(`sum_lifetime_refill_above`)에 의존하는데, `d4.reset()`이 먼저 돌면 그
-데이터가 이미 지워져 `above_realized_rate`가 항상 0으로 남는다.
 """
 
 from __future__ import annotations
@@ -39,7 +42,6 @@ from order_monitor.detectors.contact import (
 from order_monitor.detectors.d1 import D1Appeared, D1Detector, D1Event, D1Removed
 from order_monitor.detectors.d2 import D2Detector
 from order_monitor.detectors.d3 import D3Detector
-from order_monitor.detectors.d4 import D4Detector
 from order_monitor.detectors.d5 import D5Detector
 from order_monitor.ingestion.baseline_bootstrap import BootstrapError, fetch_minute_volumes
 from order_monitor.ingestion.events import (
@@ -150,11 +152,6 @@ class MonitorService:
             absorption_min_pct=Decimal(str(config.thresholds.absorption_min_pct)),
             cum_traded_lookup=self._cum_traded_at_level,
         )
-        self.d4 = D4Detector(
-            iceberg_margin=Decimal(str(config.thresholds.iceberg_margin_btc)),
-            iceberg_min_trades=config.thresholds.iceberg_min_trades,
-            refill_window_ms=config.thresholds.refill_window_ms,
-        )
         self.d5 = D5Detector(
             realize_pct=Decimal(str(config.thresholds.realize_pct)),
             realize_pct_above=Decimal(str(config.thresholds.realize_pct_above)),
@@ -177,9 +174,9 @@ class MonitorService:
         return level.cum_traded_at_level if level is not None else Decimal(0)
 
     def _refill_above_lookup(self, side: Side, price: Decimal) -> Decimal:
-        # D5 케이스2 재료 — "현재가"는 같은 side의 best (§8 D5 결정, M4)
-        best = self.order_book.best_bid if side is Side.BUY else self.order_book.best_ask
-        return self.d4.sum_lifetime_refill_above(side, price, best)
+        # D4·케이스2 비활성 (모듈 docstring) — 상수 0이라 케이스2 판정·진행률이
+        # 구조적으로 발화 불가. 재배선 시 D4의 sum_lifetime_refill_above로 복원
+        return Decimal(0)
 
     # ── 기동/종료 ──────────────────────────────────────────────
 
@@ -260,14 +257,11 @@ class MonitorService:
                         event.local_monotonic_receive_time,
                     )
                 )
-                for d4_event in self.d4.on_depth_snapshot(event, self.contact.active()):
-                    self._emit(d4_event)
                 for d5_event in self.d5.evaluate():
                     self._emit(d5_event)
         elif isinstance(event, AggTradeEvent):
             self.trade_window.add(event)
             self.level_tracker.record_trade(event)
-            self.d4.on_trade(event)  # 체결 버퍼는 상태 적재 성격 — epoch 게이트 밖
             self.volume_baseline.add(event.exchange_time_ms, event.qty)
             # 판정은 epoch 활성 중에만 — 상태 적재는 위에서 이미 수행 (PRD §5.4)
             if self.tracker.epoch_active:
@@ -386,11 +380,10 @@ class MonitorService:
                 self._emit(d5_event)
 
     def _handle_episode_ends(self, ends: list[EpisodeEnd]) -> None:
-        """접촉 episode 종료 → D3 확정 판정 발신 + D4 누적 리셋."""
+        """접촉 episode 종료 → D3 확정 판정 발신."""
         for end in ends:
             for d3_event in self.d3.on_episode_end(end):
                 self._emit(d3_event)
-            self.d4.on_episode_end(end)
 
     # ── 헬스/epoch 통지 처리 ───────────────────────────────────
 
@@ -400,19 +393,16 @@ class MonitorService:
                 logger.info("epoch started", extra={"epoch_id": notice.epoch_id})
             elif isinstance(notice, EpochEnded):
                 # 판정 전제 붕괴 — D1 활성/후보, D2 진행 중 에피소드, 접촉 episode·
-                # D3 등록·D4 누적·D5 활성 인텐트 폐기 (PRD §5.4. trade_window·
-                # volume_baseline·D4 체결 버퍼는 상태 계층이라 유지)
+                # D3 등록·D5 활성 인텐트 폐기 (PRD §5.4. trade_window·
+                # volume_baseline은 상태 계층이라 유지)
                 self.d1.reset()
                 if self.d2.episode_active:
                     logger.warning("d2 episode discarded on epoch end")
                 self.d2.reset()
                 self.contact.reset()
                 self.d3.reset()
-                # d5.reset()은 above_realized_rate 계산에 d4의 lifetime 리필을
-                # 읽으므로 d4.reset()보다 반드시 먼저 (모듈 docstring 배선 순서)
                 for d5_event in self.d5.reset():
                     self._emit(d5_event)
-                self.d4.reset()
                 logger.warning(
                     "epoch ended",
                     extra={"epoch_id": notice.epoch_id, "reason": notice.reason},

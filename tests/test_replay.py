@@ -70,17 +70,15 @@ class TestReconnect:
 
 
 class TestStreamOrderInversion:
-    """접촉 스냅샷보다 aggTrade가 먼저 도착해도 리필 쌍 판정이 성립."""
+    """순서 역전 픽스처 — D4 비활성(PRD v1.6) 후에는 무이벤트가 골든.
 
-    def test_trade_before_contact_snapshot_still_pairs(self, tmp_path):
-        service, emitted = run("order_inversion.jsonl", tmp_path)
-        icebergs = [e for e in emitted if isinstance(e, D4Iceberg)]
-        # 5사이클 전부 인정되어야만 발화 (쌍 5 ≥ ICEBERG_MIN_TRADES 5) —
-        # 1사이클(역전 도착)이 누락되면 쌍 4로 이 이벤트 자체가 없다
-        assert len(icebergs) == 1
-        assert icebergs[0].price == Decimal("61000")
-        assert icebergs[0].refill_added == Decimal("50")
-        assert icebergs[0].refill_trade_count == 5
+    구 골든은 리필 쌍 5개의 D4Iceberg 1건 — 픽스처는 D4 재배선 논의를 위해
+    보존하고, 비활성 동안은 역전 입력이 아무 이벤트도 만들지 않음을 고정한다.
+    """
+
+    def test_inversion_input_emits_nothing_while_d4_unwired(self, tmp_path):
+        _, emitted = run("order_inversion.jsonl", tmp_path)
+        assert [e for e in emitted if isinstance(e, D4Iceberg)] == []
 
     def test_deterministic_same_input_same_output(self, tmp_path):
         _, first = run("order_inversion.jsonl", tmp_path, "a.db")

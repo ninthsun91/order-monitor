@@ -222,7 +222,7 @@ def test_detector_judgment_suspended_outside_epoch(service):
     assert service.telegram.pending() == 0
 
 
-# ── M3 배선: 접촉 episode + D3/D4 (PRD §8 D3/D4, §9.1 로그 전용) ──
+# ── M3 배선: 접촉 episode + D3 (PRD §8 D3, §9.1 로그 전용. D4는 PRD v1.6 비활성) ──
 
 
 def capture_emitted(svc):
@@ -283,12 +283,13 @@ def test_d3_pierced_episode_silent_through_pipeline(tmp_path):
     svc._store.close()
 
 
-def test_d4_iceberg_emitted_through_pipeline(service):
+def test_d4_unwired_no_iceberg_events(service):
+    # PRD v1.6: D4 비활성 — 리필 사이클 입력에도 D4Iceberg가 배선에서 안 나온다
     from order_monitor.detectors.d4 import D4Iceberg
 
     events = capture_emitted(service)
     start_feed(service)
-    # best bid 61000에서 체결→소진→회복 사이클 5회 (리필 10×5 ≥ 20, 쌍 5 ≥ 5)
+    # best bid 61000에서 체결→소진→회복 사이클 5회 (구 배선이면 발화하던 입력)
     t = 1.0
     for i in range(5):
         service.on_event(AGG, agg_at("61000", "10", mono=t, trade_id=i + 10))
@@ -299,20 +300,17 @@ def test_d4_iceberg_emitted_through_pipeline(service):
             DEPTH, depth_event(bids=[("61000", "100")], asks=[("61001", "1")], mono=t + 0.1)
         )
         t += 0.2
-    d4_events = [e for e in events if isinstance(e, D4Iceberg)]
-    assert len(d4_events) == 1
-    assert d4_events[0].refill_added == Decimal("50")
-    assert service.telegram.pending() == 0  # D4는 알림 없음 (PRD §9.1)
+    assert [e for e in events if isinstance(e, D4Iceberg)] == []
+    assert service.telegram.pending() == 0
 
 
-def test_epoch_end_resets_contact_and_d3_d4(service):
+def test_epoch_end_resets_contact_and_d3(service):
     start_feed(service)
     service.on_event(DEPTH, depth_event(bids=[("61000", "100")], asks=[("61001", "1")], mono=1.0))
     assert service.contact.active()
     service.on_disconnected()  # epoch 종료
     assert service.contact.active() == {}
     assert service.d3._registered == {}
-    assert service.d4._acc == {}
 
 
 def test_contact_episodes_not_opened_outside_epoch(service):
@@ -351,16 +349,17 @@ def test_d5_case1_confirmed_through_pipeline_and_recorded_to_outbox(tmp_path):
     svc._outbox.close()
 
 
-def test_d5_case2_inferred_above_through_pipeline(tmp_path):
-    from order_monitor.detectors.d5 import D5Terminal, D5TerminalState
+def test_d5_case2_disabled_intent_stays_armed(tmp_path):
+    # PRD v1.6: 케이스2 비활성 — 구 배선이면 INFERRED_ABOVE로 인텐트를 소모하던
+    # 리필 입력에도 종국/진행률이 없고, 인텐트는 살아남아 케이스1을 계속 감시한다
+    from order_monitor.detectors.d5 import D5Progress, D5Terminal
 
     svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
     events = capture_emitted(svc)
     start_feed(svc)  # 벽 60000/1200 등록
     svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))  # APPEARED
 
-    # 상위 구간(60000 초과 ~ best_bid) 레벨에서 리필 720 BTC 인정 → 케이스2(60%) 충족
-    # best_bid는 61000(start_feed의 depth 스냅샷) — 60500이 상위 구간 안에 위치
+    # 상위 구간(60000 초과 ~ best_bid) 레벨 리필 720 BTC — 구 케이스2(60%) 충족 입력
     t = 1.0
     for i in range(5):
         svc.on_event(AGG, agg_at("60500", "144", mono=t, trade_id=100 + i))
@@ -373,13 +372,8 @@ def test_d5_case2_inferred_above_through_pipeline(tmp_path):
             depth_event(bids=[("60500", "1144")], asks=[("61001", "1")], mono=t + 0.02),
         )
         t += 0.2
-    inferred = [
-        e
-        for e in events
-        if isinstance(e, D5Terminal) and e.state is D5TerminalState.EXECUTION_INFERRED_ABOVE
-    ]
-    assert len(inferred) == 1
-    assert inferred[0].above_realized_rate == Decimal("0.6")
+    assert [e for e in events if isinstance(e, (D5Terminal, D5Progress))] == []
+    assert len(svc.d5._intents) == 1  # 인텐트 잔존 — 케이스1 감시 유지
     svc._store.close()
     svc._outbox.close()
 
@@ -419,7 +413,7 @@ def test_d5_intent_survives_long_after_registration(tmp_path):
     svc._store.close()
 
 
-def test_d5_interrupted_on_epoch_end_before_d4_reset(tmp_path):
+def test_d5_interrupted_on_epoch_end(tmp_path):
     from order_monitor.detectors.d5 import D5Terminal, D5TerminalState
 
     svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
