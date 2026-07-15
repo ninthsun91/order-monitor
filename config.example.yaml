@@ -26,7 +26,7 @@ thresholds:
                                  # (PRD v1.5) intent_ttl_seconds 삭제 — 인텐트 수명 = 벽 수명 (TTL 폐지)
 
 alerts:
-  send_d1: false
+  send_d1: true
   send_d2: true                  # D2 에피소드 온셋 (PRD v1.3)
   send_d2_summary: true          # D2 에피소드 요약 (PRD v1.3)
   send_d5_progress: true         # D5 진행률 알림 (PRD v1.2)
