@@ -30,6 +30,7 @@ from order_monitor.detectors.d5 import D5Progress, D5Terminal, D5TerminalState
 from order_monitor.ingestion.events import Side
 from order_monitor.ingestion.health import StreamStale
 from order_monitor.persistence.alerts_outbox import AlertsOutboxStore
+from order_monitor.state.wall_registry import Wall
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,7 @@ class AlertDispatcher:
         clock: Callable[[], float] = time.time,
         outbox: AlertsOutboxStore | None = None,
         d1_streak_gate: Callable[[D1Appeared], bool] | None = None,
+        wall_lookup: Callable[[], list[Wall]] | None = None,
     ) -> None:
         self._symbol = config.symbol
         self._alerts = config.alerts
@@ -129,6 +131,9 @@ class AlertDispatcher:
         # APPEARED 스트릭당 1회 게이트 (PRD §8 D1 v1.8) — service가 벽 레지스트리
         # 기반 판정·마킹을 주입. None이면 게이트 없음 (기존 동작)
         self._d1_streak_gate = d1_streak_gate
+        # D2 요약 근접 벽 컨텍스트용 벽 레지스트리 스냅샷 조회 (M6 관측 보완,
+        # 결정 기록 2026-07-23). None이면 요약에 근접 벽 줄 없음
+        self._wall_lookup = wall_lookup
         # D5 종국/진행률 dedup — 시간 쿨다운이 아닌 순수 멱등(재전송 안전용, PRD §9.2)
         self._d5_sent: set[tuple] = set()
 
@@ -305,6 +310,24 @@ class AlertDispatcher:
             f"현재가 {_fmt(event.price)}"
         )
 
+    def _nearby_wall_line(self, close_price: Decimal) -> str | None:
+        """에피소드 종가 기준 bid/ask 각 최근접 추적 벽 1개 — `sell_absorbed_stall` 류
+        흡수 판정의 해석 근거 (결정 기록 2026-07-23: 거리 제한·config 키 없음)."""
+        if self._wall_lookup is None:
+            return None
+        parts = []
+        walls = self._wall_lookup()
+        for side in (Side.BUY, Side.SELL):
+            candidates = [w for w in walls if w.side is side]
+            if not candidates:
+                continue
+            nearest = min(candidates, key=lambda w: abs(w.price - close_price))
+            parts.append(
+                f"{_SIDE_LABEL[side]} {_fmt(nearest.price)} "
+                f"(잔량 {_fmt_approx(nearest.last_qty)} / 피크 {_fmt_approx(nearest.peak_qty)} BTC)"
+            )
+        return "근접 벽: " + " · ".join(parts) if parts else None
+
     def _format_d2_summary(self, event: D2BurstSummary) -> str:
         start = datetime.fromtimestamp(event.start_exchange_ms / 1000, _KST)
         end = datetime.fromtimestamp(event.end_exchange_ms / 1000, _KST)
@@ -315,7 +338,7 @@ class AlertDispatcher:
         change_pct = (event.close_price - event.open_price) / event.open_price * 100
         # 판정 줄의 %는 에피소드 종가 → 요약 확정 시점(종료 +병합 창) 가격
         follow_pct = (event.finalize_price - event.close_price) / event.close_price * 100
-        return (
+        text = (
             f"⚡ 볼륨 버스트 요약 (D2) — {duration_min}분 "
             f"(KST {start:%H:%M}~{end:%H:%M})\n"
             f"심볼: {self._symbol} (Binance Spot)\n"
@@ -328,3 +351,7 @@ class AlertDispatcher:
             f"가격: {_fmt(event.open_price)} → {_fmt(event.close_price)} ({change_pct:+.2f}%) · "
             f"고 {_fmt(event.high_price)} / 저 {_fmt(event.low_price)}"
         )
+        nearby = self._nearby_wall_line(event.close_price)
+        if nearby is not None:
+            text += f"\n{nearby}"
+        return text

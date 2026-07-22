@@ -172,6 +172,7 @@ class MonitorService:
             clock=clock,
             outbox=None,
             d1_streak_gate=self._appeared_streak_unalerted,
+            wall_lookup=self.wall_registry.walls,
         )
         self._store: WallStore | None = None
 

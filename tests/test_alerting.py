@@ -153,6 +153,42 @@ def test_d2_summary_format():
     assert "가격: 64,300 → 64,150 (-0.23%) · 고 64,320 / 저 64,020" in text
 
 
+def test_d2_summary_nearby_wall_context():
+    # M6 관측 보완 ② — 종가(64,150) 기준 bid/ask 각 최근접 추적 벽 1개 동봉
+    from order_monitor.state.wall_registry import Wall
+
+    def wall(price, side, last, peak):
+        return Wall(
+            price=Decimal(price),
+            side=side,
+            last_qty=Decimal(last),
+            peak_qty=Decimal(peak),
+            first_seen_at=0.0,
+            first_seen_above_threshold=None,
+            last_seen_at=0.0,
+        )
+
+    walls = [
+        wall("62800", Side.BUY, "180", "220.65"),
+        wall("61000", Side.BUY, "1200", "1300"),  # 더 먼 bid — 제외
+        wall("64500", Side.SELL, "150", "150"),
+    ]
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(
+        make_config(), sender, monotonic=FakeClock(), wall_lookup=lambda: walls
+    )
+    dispatcher.dispatch(summary())
+    assert "근접 벽: bid 62,800 (잔량 180 / 피크 220.6 BTC) · ask 64,500 (잔량 150 / 피크 150 BTC)" in sender.sent[0]
+
+    # 벽이 없으면 줄 자체가 생략
+    sender2 = FakeSender()
+    dispatcher2 = AlertDispatcher(
+        make_config(), sender2, monotonic=FakeClock(), wall_lookup=lambda: []
+    )
+    dispatcher2.dispatch(summary())
+    assert "근접 벽" not in sender2.sent[0]
+
+
 def test_d2_summary_verdict_absorbed_retrace_format():
     # 실측 사례(2026-07-13 14:27 KST): 델타비 0.90 매도인데 요약 시점 시가 회복
     sender = FakeSender()
