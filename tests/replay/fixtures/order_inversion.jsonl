@@ -2,6 +2,7 @@
 {"t": 0.1, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 1, "bids": [["61050", "1"]], "asks": [["61051", "1"]]}}
 {"t": 0.2, "stream": "btcusdt@aggTrade", "data": {"a": 1, "p": "61050", "q": "0.5", "m": true, "T": 200}}
 {"t": 0.3, "stream": "btcusdt@depth@100ms", "data": {"U": 100, "u": 101, "E": 300, "b": [["55000", "500"]], "a": []}}
+{"t": 0.35, "stream": "btcusdt@depth@100ms", "data": {"U": 102, "u": 103, "E": 350, "b": [["61000", "100"]], "a": []}}
 {"t": 1.0, "stream": "btcusdt@aggTrade", "data": {"a": 10, "p": "61000", "q": "10", "m": true, "T": 1000}}
 {"t": 1.05, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 2, "bids": [["61000", "90"]], "asks": [["61051", "1"]]}}
 {"t": 1.1, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 3, "bids": [["61000", "100"]], "asks": [["61051", "1"]]}}

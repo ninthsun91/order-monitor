@@ -10,9 +10,11 @@
 - 발화 여부와 무관하게 디텍터 이벤트 로그는 service가 남긴다 — 여기는 발송만 판단
 - 메시지는 한국어 고정 (PRD 오픈 퀘스천 #4 — M2에서 확정, DEVELOPMENT_PLAN 결정
   기록). 요약의 구간 시각은 KST 표기 (단일 사용자 전제)
-- D5 종국(확정/추정) 알림은 outbox(M4, PRD §9.4)에 선기록 후 발송 — 크래시로
+- D5 종국(확정) 알림은 outbox(M4, PRD §9.4)에 선기록 후 발송 — 크래시로
   발송 확인 전 죽어도 재시작 시 재전송된다. 로그 전용 종국 상태(부분체결/철회/
   만료/INTERRUPTED)와 진행률은 outbox 미사용(§9.4 범위 한정)
+- D4 흡수 방어(v1.11): `send_d4` 게이트, 순수 멱등 dedup(스트릭·종류·경계배수),
+  outbox 미적용. DEFENSE_INTERRUPTED는 로그만
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from decimal import Decimal
 from order_monitor.config import AppConfig
 from order_monitor.detectors.d1 import D1Appeared, D1Attribution, D1Removed
 from order_monitor.detectors.d2 import D2BurstOnset, D2BurstSummary, D2Label, D2Verdict
+from order_monitor.detectors.d4 import D4Defense, D4DefenseKind
 from order_monitor.detectors.d5 import D5Progress, D5Terminal, D5TerminalState
 from order_monitor.ingestion.events import Side
 from order_monitor.ingestion.health import StreamStale
@@ -136,6 +139,8 @@ class AlertDispatcher:
         self._wall_lookup = wall_lookup
         # D5 종국/진행률 dedup — 시간 쿨다운이 아닌 순수 멱등(재전송 안전용, PRD §9.2)
         self._d5_sent: set[tuple] = set()
+        # D4 흡수 방어 dedup — 동일 원리의 순수 멱등 셋 (PRD §9.2 v1.11)
+        self._d4_sent: set[tuple] = set()
 
     def set_outbox(self, outbox: AlertsOutboxStore) -> None:
         """outbox는 db_path 확정 후 `startup()`에서 열리므로 생성자 이후 별도 주입."""
@@ -185,6 +190,8 @@ class AlertDispatcher:
             return self._dispatch_d5_terminal(event)
         elif isinstance(event, D5Progress):
             return self._dispatch_d5_progress(event)
+        elif isinstance(event, D4Defense):
+            return self._dispatch_d4(event)
         else:
             return False
 
@@ -206,12 +213,7 @@ class AlertDispatcher:
         self._d5_sent.add(key)
 
         recorded_at = self._clock()
-        formatter = (
-            self._format_d5_confirmed
-            if event.state is D5TerminalState.EXECUTION_CONFIRMED
-            else self._format_d5_inferred_above
-        )
-        text = formatter(event, recorded_at)
+        text = self._format_d5_confirmed(event, recorded_at)
 
         if self._outbox is not None:
             rowid = self._outbox.record(event.side, event.price, event.state.value, text, recorded_at)
@@ -224,7 +226,7 @@ class AlertDispatcher:
     def _dispatch_d5_progress(self, event: D5Progress) -> bool:
         if not self._alerts.send_d5_progress:
             return False
-        key = ("d5progress", event.intent_id, event.series, str(event.boundary_pct))
+        key = ("d5progress", event.intent_id, str(event.boundary_pct))
         if key in self._d5_sent:
             return False
         self._d5_sent.add(key)
@@ -249,27 +251,55 @@ class AlertDispatcher:
             f"발생: {occurred:%H:%M:%S} KST"
         )
 
-    def _format_d5_inferred_above(self, event: D5Terminal, recorded_at: float) -> str:
-        above_qty = event.registered_qty * event.above_realized_rate
-        occurred = datetime.fromtimestamp(recorded_at, _KST)
-        return (
-            f"🟡 {_D5_INTENT_LABEL[event.side]} 상위 체결 추정 (케이스 2)\n"
-            f"심볼: {self._symbol} (Binance Spot)\n"
-            f"{self._d5_intent_line(event)}\n"
-            f"상위 구간 리필 확인 체결: {_fmt_approx(above_qty)} BTC "
-            f"(추정 실현률 {event.above_realized_rate * 100:.0f}%)\n"
-            f"등록→추정: {_fmt_duration(event.registered_seconds)}\n"
-            f"발생: {occurred:%H:%M:%S} KST\n"
-            f"※ 추정 등급 — 체결 주체 귀속 불가 (공개 데이터 한계)"
-        )
-
     def _format_d5_progress(self, event: D5Progress) -> str:
-        series_label = "케이스 1 계열" if event.series == "case1" else "케이스 2 계열"
         pct = event.boundary_pct * 100
         return (
-            f"🔵 {_D5_INTENT_LABEL[event.side]} 흡수 진행 {pct:.0f}% ({series_label})\n"
+            f"🔵 {_D5_INTENT_LABEL[event.side]} 흡수 진행 {pct:.0f}%\n"
             f"{self._d5_intent_line(event)}\n"
             f"체결 누적: {_fmt_approx(event.realized_qty)} BTC (실현률 {pct:.0f}% 경계 도달)"
+        )
+
+    # ── D4 흡수 방어 (PRD §9.1/§9.2 v1.11) ─────────────────────
+
+    def _dispatch_d4(self, event: D4Defense) -> bool:
+        if event.kind is D4DefenseKind.INTERRUPTED:
+            return False  # epoch 종료 — 로그만 (PRD §9.1)
+        if not self._alerts.send_d4:
+            return False
+        # dedup 키 (price, side, 스트릭, 이벤트 종류/경계배수) — 시간 쿨다운 미적용:
+        # 감지·종결은 스트릭당 1회가 구조적 보장(래치), 진행은 경계 중복만 차단 (PRD §9.2)
+        key = (
+            "d4",
+            event.side.value,
+            str(event.price),
+            event.streak_started_at,
+            event.kind.value,
+            str(event.boundary_multiple),
+        )
+        if key in self._d4_sent:
+            return False
+        self._d4_sent.add(key)
+        self._sender.enqueue(self._format_d4(event))  # outbox 미적용 (PRD §9.4)
+        return True
+
+    def _format_d4(self, event: D4Defense) -> str:
+        title = {
+            D4DefenseKind.DETECTED: "레벨 흡수 방어 감지",
+            D4DefenseKind.PROGRESS: f"레벨 흡수 방어 진행 — {event.boundary_multiple:.1f}× 경계"
+            if event.boundary_multiple is not None
+            else "레벨 흡수 방어 진행",
+            D4DefenseKind.CLOSED: "레벨 흡수 방어 종결 (벽 소멸)",
+        }[event.kind]
+        return (
+            f"🛡 {title} (D4)\n"
+            f"심볼: {self._symbol} (Binance Spot)\n"
+            f"레벨: {_fmt(event.price)} ({_SIDE_LABEL[event.side]}) · "
+            f"기준 {_fmt(event.base_qty)} BTC (스트릭 개시 표시크기)\n"
+            f"흡수 {_fmt_approx(event.absorbed_total)} BTC = "
+            f"가시 {_fmt_approx(event.absorbed_visible)} + 은닉 {_fmt_approx(event.absorbed_hidden)} "
+            f"— 기준의 {event.multiple:.1f}배\n"
+            f"인정 이벤트 {event.event_count}건 · 스트릭 {_fmt_duration(event.streak_seconds)}\n"
+            f"※ 관측 수치 통지 — 주체·의도 해석 없음 (PRD §8 D4)"
         )
 
     def _format_d1_appeared(self, event: D1Appeared) -> str:

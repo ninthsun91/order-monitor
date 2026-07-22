@@ -1,10 +1,11 @@
-"""D5 종국 알림 outbox — 크래시에도 확정/추정 알림 유실 방지 (PRD §9.4, M4 선행 도입).
+"""D5 종국 알림 outbox — 크래시에도 확정 알림 유실 방지 (PRD §9.4, M4 선행 도입).
 
 `walls` 테이블(M1 선행)과 같은 패턴: 선기록(unsent) → Telegram 발송 큐 투입 →
 발송 확인 시 sent 마킹. 재시작 시 미발송 행을 그대로 재전송한다 — 메시지
 텍스트가 이미 완성된 채로 저장돼 있어 인텐트/디텍터 상태를 재구성할 필요가
-없다. 적용 범위는 D5 종국 알림(CONFIRMED/INFERRED_ABOVE) 전용 — 진행률·D2·
-watchdog은 시효성 신호라 재전송 가치가 없다(PRD §9.4 범위 한정).
+없다. 적용 범위는 D5 종국 알림(CONFIRMED — v1.11에서 INFERRED_ABOVE 폐지로
+단일) 전용 — 진행률·D2·watchdog은 시효성 신호라 재전송 가치가 없고, D4 흡수
+방어 알림도 미적용(관측 등급, 재시작 후 재전송 가치 낮음 — PRD §9.4 v1.11).
 
 `UNIQUE(side, price, terminal_state, recorded_at)`는 방어용(단일 프로세스 내
 우발적 중복 기록 차단, `INSERT OR IGNORE`)이다. `recorded_at`은 D5Detector의

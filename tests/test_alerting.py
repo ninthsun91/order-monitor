@@ -273,21 +273,7 @@ def confirmed(intent_id=1, side=Side.BUY, price="106250", registered_qty="342", 
         registered_qty=Decimal(registered_qty),
         state=D5TerminalState.EXECUTION_CONFIRMED,
         level_realized_rate=Decimal(rate),
-        above_realized_rate=Decimal(0),
         registered_seconds=872.0,  # 14m 32s
-    )
-
-
-def inferred_above(intent_id=2, side=Side.BUY, price="106250", registered_qty="342", rate="0.64"):
-    return D5Terminal(
-        intent_id=intent_id,
-        side=side,
-        price=Decimal(price),
-        registered_qty=Decimal(registered_qty),
-        state=D5TerminalState.EXECUTION_INFERRED_ABOVE,
-        level_realized_rate=Decimal(0),
-        above_realized_rate=Decimal(rate),
-        registered_seconds=1325.0,  # 22m 05s
     )
 
 
@@ -299,18 +285,16 @@ def log_only_terminal(state, intent_id=3):
         registered_qty=Decimal("1200"),
         state=state,
         level_realized_rate=Decimal("0.1"),
-        above_realized_rate=Decimal("0.05"),
         registered_seconds=100.0,
     )
 
 
-def progress(intent_id=1, series="case1", boundary="0.4", realized="138"):
+def progress(intent_id=1, boundary="0.4", realized="138"):
     return D5Progress(
         intent_id=intent_id,
         side=Side.BUY,
         price=Decimal("106250"),
         registered_qty=Decimal("342"),
-        series=series,
         boundary_pct=Decimal(boundary),
         realized_qty=Decimal(realized),
     )
@@ -328,23 +312,12 @@ def test_d5_confirmed_message_format():
     assert "발생:" in text and "KST" in text
 
 
-def test_d5_inferred_above_message_format():
-    sender = FakeSender()
-    dispatcher = AlertDispatcher(make_config(), sender, clock=FakeClock(1783825200.0))
-    assert dispatcher.dispatch(inferred_above()) is True
-    text = sender.sent[0]
-    assert "🟡 매수 의도 상위 체결 추정 (케이스 2)" in text
-    assert "상위 구간 리필 확인 체결: 218.9 BTC (추정 실현률 64%)" in text
-    assert "등록→추정: 22m 05s" in text
-    assert "※ 추정 등급 — 체결 주체 귀속 불가 (공개 데이터 한계)" in text
-
-
 def test_d5_progress_message_format():
     sender = FakeSender()
     dispatcher = AlertDispatcher(make_config(), sender)
     assert dispatcher.dispatch(progress()) is True
     text = sender.sent[0]
-    assert "🔵 매수 의도 흡수 진행 40% (케이스 1 계열)" in text
+    assert "🔵 매수 의도 흡수 진행 40%" in text
     assert "의도 레벨: 106,250 (bid) · 표시 342 BTC" in text
     assert "체결 누적: 138 BTC (실현률 40% 경계 도달)" in text
 
@@ -384,6 +357,82 @@ def test_d5_progress_dedup_is_per_boundary():
     assert dispatcher.dispatch(progress(boundary="0.2")) is True
     assert dispatcher.dispatch(progress(boundary="0.2")) is False  # 같은 경계 재발화 없음
     assert dispatcher.dispatch(progress(boundary="0.4")) is True  # 다른 경계는 발화
+
+
+# ── D4 흡수 방어 (PRD §9.1, §9.2 v1.11) ──────────────────────
+
+
+def d4_defense(kind=None, boundary=None, streak_started_at=1000.0):
+    from order_monitor.detectors.d4 import D4Defense, D4DefenseKind
+
+    return D4Defense(
+        kind=kind or D4DefenseKind.DETECTED,
+        side=Side.BUY,
+        price=Decimal("62800"),
+        base_qty=Decimal("180"),
+        absorbed_visible=Decimal("250"),
+        absorbed_hidden=Decimal("130.5"),
+        absorbed_total=Decimal("380.5"),
+        multiple=Decimal("380.5") / Decimal("180"),
+        event_count=12,
+        streak_started_at=streak_started_at,
+        streak_seconds=312.0,  # 5m 12s
+        boundary_multiple=Decimal(boundary) if boundary is not None else None,
+    )
+
+
+def test_d4_detected_message_format():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender)
+    assert dispatcher.dispatch(d4_defense()) is True
+    text = sender.sent[0]
+    assert "🛡 레벨 흡수 방어 감지 (D4)" in text
+    assert "레벨: 62,800 (bid) · 기준 180 BTC (스트릭 개시 표시크기)" in text
+    assert "흡수 380.5 BTC = 가시 250 + 은닉 130.5 — 기준의 2.1배" in text
+    assert "인정 이벤트 12건 · 스트릭 5m 12s" in text
+    assert "관측 수치 통지" in text
+
+
+def test_d4_progress_and_closed_titles():
+    from order_monitor.detectors.d4 import D4DefenseKind
+
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender)
+    assert dispatcher.dispatch(d4_defense(kind=D4DefenseKind.PROGRESS, boundary="2.5")) is True
+    assert dispatcher.dispatch(d4_defense(kind=D4DefenseKind.CLOSED)) is True
+    assert "레벨 흡수 방어 진행 — 2.5× 경계 (D4)" in sender.sent[0]
+    assert "레벨 흡수 방어 종결 (벽 소멸) (D4)" in sender.sent[1]
+
+
+def test_d4_gated_by_send_d4_flag():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(send_d4=False), sender)
+    assert dispatcher.dispatch(d4_defense()) is False
+    assert sender.sent == []
+
+
+def test_d4_interrupted_is_log_only():
+    from order_monitor.detectors.d4 import D4DefenseKind
+
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender)
+    assert dispatcher.dispatch(d4_defense(kind=D4DefenseKind.INTERRUPTED)) is False
+    assert sender.sent == []
+
+
+def test_d4_dedup_is_idempotent_per_streak_and_boundary():
+    from order_monitor.detectors.d4 import D4DefenseKind
+
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender)
+    assert dispatcher.dispatch(d4_defense()) is True
+    assert dispatcher.dispatch(d4_defense()) is False  # 같은 스트릭 DETECTED 재전송 없음
+    # 새 스트릭(재등록·epoch 재개시)은 식별자가 달라 다시 발송
+    assert dispatcher.dispatch(d4_defense(streak_started_at=2000.0)) is True
+    # 진행은 경계 단위 dedup
+    assert dispatcher.dispatch(d4_defense(kind=D4DefenseKind.PROGRESS, boundary="2.5")) is True
+    assert dispatcher.dispatch(d4_defense(kind=D4DefenseKind.PROGRESS, boundary="2.5")) is False
+    assert dispatcher.dispatch(d4_defense(kind=D4DefenseKind.PROGRESS, boundary="3.0")) is True
 
 
 def test_d5_confirmed_records_to_outbox_and_marks_sent_on_delivery(tmp_path):

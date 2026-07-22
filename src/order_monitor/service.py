@@ -6,13 +6,14 @@ EpochEnded에서 D1 활성/후보·접촉 episode·D3 등록·D5 활성 인텐�
 D5 확정 알림은 SQLite `alerts_outbox`(PRD §9.4)에 선기록 후 발송.
 모든 디텍터 이벤트는 발송 여부와 무관하게 구조화 로그로 남는다 (PRD §11.4).
 
-**D4·케이스2 임시 비활성 (PRD v1.6, 2026-07-15)**: D4(아이스버그/리필)와
-그걸 재료로 쓰는 D5 케이스2는 배선에서 제외됐다 — 실전 조율 단계에서
-D1/D2/D3+케이스1(확정 등급)만 운용하고, D4 방식(리필 페어링 vs 체결량-잔량
-대조)은 표본이 쌓인 뒤 재설계 논의 후 재배선한다(DEVELOPMENT_PLAN 결정 기록).
-`refill_above_lookup`이 상수 0을 반환하므로 케이스2 발화·진행률·인텐트 소모가
-구조적으로 불가능하다 — 인텐트는 벽 소멸/epoch 종료까지 살아 케이스1만 감시.
-`detectors/d4.py` 모듈·단위 테스트는 재논의 기반으로 보존.
+**D4 = 레벨 흡수 방어 독립 디텍터 (PRD §8 D4 v1.12 재구현)**: 케이스 2 폐지
+(v1.11)로 D4는 D5에 공급하지 않는다. 스트릭 수명은 레지스트리 이벤트에 배선 —
+등록(diff_result.registrations) → `d4.on_wall_registered`, 소멸 →
+`d4.on_wall_removed`(DEFENSE_CLOSED 발신), epoch 시작 → `d4.on_epoch_start`
+(활성 벽 전체 재개시, v1.12), epoch 종료 → `d4.reset()`(INTERRUPTED 로그).
+틱 대조는 접촉 episode 스코프라 episode 종료를 `_handle_episode_ends`에서
+D4에도 전달한다. 구 `d5.reset()` 선행 순서 제약은 케이스 2 폐지로 소멸
+(결정 기록 2026-07-23).
 
 벽 소멸(diff tombstone/하한 미만) 시 배선 순서가 판정 정합성을 가른다:
 episode REMOVED 종료 → D3 확정 판정 (D1 등록이 아직 살아있어야 함) →
@@ -42,6 +43,7 @@ from order_monitor.detectors.contact import (
 from order_monitor.detectors.d1 import D1Appeared, D1Detector, D1Event, D1Removed
 from order_monitor.detectors.d2 import D2Detector
 from order_monitor.detectors.d3 import D3Detector
+from order_monitor.detectors.d4 import D4Detector
 from order_monitor.detectors.d5 import D5Detector
 from order_monitor.ingestion.baseline_bootstrap import BootstrapError, fetch_minute_volumes
 from order_monitor.ingestion.events import (
@@ -155,12 +157,18 @@ class MonitorService:
             absorption_min_pct=Decimal(str(config.thresholds.absorption_min_pct)),
             cum_traded_lookup=self._cum_traded_at_level,
         )
+        self.d4 = D4Detector(
+            absorb_multiple=Decimal(str(config.thresholds.absorb_multiple)),
+            absorb_progress_step=Decimal(str(config.thresholds.absorb_progress_step)),
+            absorb_min_events=config.thresholds.absorb_min_events,
+            refill_window_ms=config.thresholds.refill_window_ms,
+            clock=clock,
+            monotonic=monotonic,
+        )
         self.d5 = D5Detector(
             realize_pct=Decimal(str(config.thresholds.realize_pct)),
-            realize_pct_above=Decimal(str(config.thresholds.realize_pct_above)),
             progress_step_pct=Decimal(str(config.thresholds.progress_step_pct)),
             cum_traded_lookup=self._cum_traded_at_level,
-            refill_above_lookup=self._refill_above_lookup,
             monotonic=monotonic,
         )
         self.telegram = TelegramSender(telegram_token, config.telegram.chat_id)
@@ -181,11 +189,6 @@ class MonitorService:
         # 이탈에도 엔트리가 보존되어 생애 누적이 유지된다 (§7 v1.4 예외)
         level = self.level_tracker.get(side, price)
         return level.cum_traded_at_level if level is not None else Decimal(0)
-
-    def _refill_above_lookup(self, side: Side, price: Decimal) -> Decimal:
-        # D4·케이스2 비활성 (모듈 docstring) — 상수 0이라 케이스2 판정·진행률이
-        # 구조적으로 발화 불가. 재배선 시 D4의 sum_lifetime_refill_above로 복원
-        return Decimal(0)
 
     # ── 기동/종료 ──────────────────────────────────────────────
 
@@ -267,6 +270,10 @@ class MonitorService:
                         event.local_monotonic_receive_time,
                     )
                 )
+                # D4 틱 마감 — 관통/반등으로 방금 끝난 episode는 위에서 이미
+                # 틱 상태가 소거돼 이번 틱 누적에서 자연 제외된다 (비관통 게이트)
+                for d4_event in self.d4.on_depth_snapshot(event, self.contact.active()):
+                    self._emit(d4_event)
                 for d5_event in self.d5.evaluate():
                     self._emit(d5_event)
         elif isinstance(event, AggTradeEvent):
@@ -276,6 +283,7 @@ class MonitorService:
             # 판정은 epoch 활성 중에만 — 상태 적재는 위에서 이미 수행 (PRD §5.4)
             if self.tracker.epoch_active:
                 self._handle_episode_ends(self.contact.on_trade(event))  # 체결가 관통
+                self.d4.on_trade(event)
                 for d2_event in self.d2.on_trade(event):
                     self._emit(d2_event)
                 for d5_event in self.d5.evaluate():
@@ -286,6 +294,7 @@ class MonitorService:
             assert self._store is not None
             self._store.sync_diff(self.wall_registry, event, removals)
             # 등록/소멸 궤적 로그 (M6 관측 보완 — 준임계 벽 생애 기록, epoch 무관)
+            # + D4 스트릭 수명 배선 (PRD §8 D4 v1.12 — 스트릭 = 레지스트리 활성 기간)
             for wall in diff_result.registrations:
                 logger.info(
                     "wall registered",
@@ -295,6 +304,7 @@ class MonitorService:
                         "qty": str(wall.last_qty),
                     },
                 )
+                self.d4.on_wall_registered(wall)
             for removal in removals:
                 logger.info(
                     "wall removed",
@@ -306,6 +316,9 @@ class MonitorService:
                         "peak_qty": str(removal.wall.peak_qty),
                     },
                 )
+                d4_closed = self.d4.on_wall_removed(removal)
+                if d4_closed is not None:
+                    self._emit(d4_closed)
             if self.tracker.epoch_active:
                 # 소멸 레벨의 episode를 먼저 REMOVED 종료 — D3 확정 판정은 D1 등록
                 # 해제(아래 라우팅) 전에 이뤄져야 한다 (모듈 docstring 배선 순서)
@@ -434,10 +447,11 @@ class MonitorService:
         return True
 
     def _handle_episode_ends(self, ends: list[EpisodeEnd]) -> None:
-        """접촉 episode 종료 → D3 확정 판정 발신."""
+        """접촉 episode 종료 → D3 확정 판정 발신 + D4 틱 대조 상태 소거."""
         for end in ends:
             for d3_event in self.d3.on_episode_end(end):
                 self._emit(d3_event)
+            self.d4.on_episode_end(end)
 
     # ── 헬스/epoch 통지 처리 ───────────────────────────────────
 
@@ -445,16 +459,21 @@ class MonitorService:
         for notice in notices:
             if isinstance(notice, EpochStarted):
                 logger.info("epoch started", extra={"epoch_id": notice.epoch_id})
+                # D4 스트릭 재개시 — 활성 벽 전체 새 스트릭, R = 현재 last_qty
+                # (PRD §8 D4 v1.12 — 복원·epoch 생존 벽의 추적 사각 방지)
+                self.d4.on_epoch_start(self.wall_registry.walls())
             elif isinstance(notice, EpochEnded):
                 # 판정 전제 붕괴 — D1 활성/후보, D2 진행 중 에피소드, 접촉 episode·
-                # D3 등록·D5 활성 인텐트 폐기 (PRD §5.4. trade_window·
-                # volume_baseline은 상태 계층이라 유지)
+                # D3 등록·D4 스트릭 누적·D5 활성 인텐트 폐기 (PRD §5.4.
+                # trade_window·volume_baseline은 상태 계층이라 유지)
                 self.d1.reset()
                 if self.d2.episode_active:
                     logger.warning("d2 episode discarded on epoch end")
                 self.d2.reset()
                 self.contact.reset()
                 self.d3.reset()
+                for d4_event in self.d4.reset():
+                    self._emit(d4_event)  # DEFENSE_INTERRUPTED — 로그만 (dispatcher 미발송)
                 for d5_event in self.d5.reset():
                     self._emit(d5_event)
                 logger.warning(

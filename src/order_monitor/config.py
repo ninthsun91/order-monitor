@@ -29,11 +29,11 @@ class ThresholdsConfig:
     summary_move_min_pct: float
     absorption_min_pct: float
     pierce_persist_snapshots: int
-    iceberg_margin_btc: float
-    iceberg_min_trades: int
     refill_window_ms: int
+    absorb_multiple: float
+    absorb_progress_step: float
+    absorb_min_events: int
     realize_pct: float
-    realize_pct_above: float
     progress_step_pct: float
 
 
@@ -42,6 +42,7 @@ class AlertsConfig:
     send_d1: bool
     send_d2: bool
     send_d2_summary: bool
+    send_d4: bool
     send_d5_progress: bool
     send_wall_report: bool
     wall_report_interval_minutes: float
@@ -126,7 +127,6 @@ _RATIO_FIELDS = (
     "fill_attribution",
     "absorption_min_pct",
     "realize_pct",
-    "realize_pct_above",
     "progress_step_pct",
     "episode_exit_ratio",
     "delta_directional_ratio",
@@ -172,6 +172,10 @@ def _validate_invariants(config: AppConfig) -> None:
 
     if config.thresholds.vol_multiplier <= 1:
         raise ConfigError(f"'thresholds.vol_multiplier' must be > 1, got {config.thresholds.vol_multiplier}")
+
+    # D4 배수 판정의 의미 조건 (PRD §10 v1.11) — step·min_events 양수는 위 공통 검증이 커버
+    if config.thresholds.absorb_multiple <= 1:
+        raise ConfigError(f"'thresholds.absorb_multiple' must be > 1, got {config.thresholds.absorb_multiple}")
 
     if config.watchdog.heartbeat_interval >= config.watchdog.stale_seconds:
         raise ConfigError(

@@ -13,7 +13,10 @@ def test_load_example_config():
 
     assert config.symbol == "BTC/USDT"
     assert config.thresholds.size_threshold_btc == 1000.0
-    assert config.thresholds.iceberg_min_trades == 5
+    assert config.thresholds.absorb_multiple == 2.0  # D4 배수 판정 (PRD v1.11)
+    assert config.thresholds.absorb_progress_step == 0.5
+    assert config.thresholds.absorb_min_events == 5
+    assert config.alerts.send_d4 is True  # D4 흡수 방어 알림 기본 on (PRD v1.11)
     assert config.alerts.send_d1 is True  # 기본 on (PRD v1.10 — 52230f2에서 임시 on으로 시작해 정식 승격)
     assert config.alerts.send_d2 is True
     assert config.wall_tracker.record_min_qty_btc == 100.0
@@ -113,6 +116,32 @@ def test_non_positive_value_raises(tmp_path):
     )
 
     with pytest.raises(ConfigError, match="thresholds.persist_seconds' must be positive"):
+        load_config(bad_config)
+
+
+def test_absorb_multiple_must_exceed_one(tmp_path):
+    # PRD §10 v1.11 불변조건 — 배수 1 이하면 표시 크기만큼의 흡수로도 발화 (의미 조건 위반)
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace("absorb_multiple: 2.0", "absorb_multiple: 1.0")
+    )
+
+    with pytest.raises(ConfigError, match="thresholds.absorb_multiple' must be > 1"):
+        load_config(bad_config)
+
+
+def test_stale_v1_10_keys_rejected(tmp_path):
+    # v1.11 키 교체 — 구 config.yaml(iceberg_*·realize_pct_above 잔존)은 기동 거부
+    # (엄격 스키마 — VPS 배포 시 config 동시 수정 필수의 실증, NEXT_STEPS §0)
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace(
+            "absorb_multiple: 2.0", "iceberg_margin_btc: 20"
+        )
+    )
+
+    # 엄격 스키마는 missing을 먼저 보고 — 어느 쪽이든 기동 거부가 계약
+    with pytest.raises(ConfigError, match="missing required keys: absorb_multiple"):
         load_config(bad_config)
 
 

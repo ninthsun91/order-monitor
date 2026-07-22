@@ -13,7 +13,7 @@ from pathlib import Path
 from order_monitor.config import load_config
 from order_monitor.detectors.d1 import D1Appeared
 from order_monitor.detectors.d3 import D3Absorption
-from order_monitor.detectors.d4 import D4Iceberg
+from order_monitor.detectors.d4 import D4Defense
 from order_monitor.detectors.d5 import D5Terminal, D5TerminalState
 from order_monitor.ingestion.events import Side
 
@@ -70,15 +70,20 @@ class TestReconnect:
 
 
 class TestStreamOrderInversion:
-    """순서 역전 픽스처 — D4 비활성(PRD v1.6) 후에는 무이벤트가 골든.
+    """순서 역전 픽스처 — 레지스트리 벽 61000(R=100)에서 체결→회복 리필 5쌍.
 
-    구 골든은 리필 쌍 5개의 D4Iceberg 1건 — 픽스처는 D4 재배선 논의를 위해
-    보존하고, 비활성 동안은 역전 입력이 아무 이벤트도 만들지 않음을 고정한다.
-    """
+    D4 재구현(v1.12) 골든: absorbed 50 = 0.5×R < absorb_multiple(2.0)이라
+    발화는 없지만, 순서 역전 입력의 가시 리필이 실배선(diff 등록 → 스트릭 →
+    접촉 episode 틱 대조)을 통해 스트릭 생애 누적으로 결정적으로 쌓인다."""
 
-    def test_inversion_input_emits_nothing_while_d4_unwired(self, tmp_path):
-        _, emitted = run("order_inversion.jsonl", tmp_path)
-        assert [e for e in emitted if isinstance(e, D4Iceberg)] == []
+    def test_inversion_refills_accumulate_on_streak_without_firing(self, tmp_path):
+        service, emitted = run("order_inversion.jsonl", tmp_path)
+        assert [e for e in emitted if isinstance(e, D4Defense)] == []
+        streak = service.d4._streaks[(Side.BUY, Decimal("61000"))]
+        assert streak.absorbed_visible == Decimal("50")
+        assert streak.absorbed_hidden == Decimal(0)
+        assert streak.event_count == 5
+        assert streak.base_qty == Decimal("100")  # 등록 시점 R 고정
 
     def test_deterministic_same_input_same_output(self, tmp_path):
         _, first = run("order_inversion.jsonl", tmp_path, "a.db")
