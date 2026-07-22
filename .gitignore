@@ -12,6 +12,10 @@ __pycache__/
 config.yaml
 .env
 
+# 로컬 분석 데이터 — VPS 추출 번들(scripts/fetch_vps_*.sh 산출)·검증 런 기록
+extracts/
+logs/
+
 .DS_Store
 
 .claude/settings.local.json
