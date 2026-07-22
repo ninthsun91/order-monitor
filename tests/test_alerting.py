@@ -316,6 +316,7 @@ def test_d5_log_only_terminal_states_are_never_sent():
     sender = FakeSender()
     dispatcher = AlertDispatcher(make_config(), sender)
     for state in (
+        D5TerminalState.CONFIRMED_CLOSED,  # (v1.9) 확정 래치 마감 — D1 REMOVED 알림이 대체
         D5TerminalState.PARTIALLY_EXECUTED,
         D5TerminalState.INTENT_WITHDRAWN,
         D5TerminalState.INTERRUPTED,

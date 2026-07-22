@@ -39,6 +39,7 @@ _SIDE_LABEL = {Side.BUY: "bid", Side.SELL: "ask"}
 _D5_INTENT_LABEL = {Side.BUY: "매수 의도", Side.SELL: "매도 의도"}
 _D5_LOG_ONLY_STATES = frozenset(
     {
+        D5TerminalState.CONFIRMED_CLOSED,
         D5TerminalState.PARTIALLY_EXECUTED,
         D5TerminalState.INTENT_WITHDRAWN,
         D5TerminalState.INTERRUPTED,

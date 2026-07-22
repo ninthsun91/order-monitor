@@ -122,14 +122,18 @@ class TestEvaluateCases:
         assert len(events) == 1
         assert events[0].state is D5TerminalState.EXECUTION_CONFIRMED
 
-    def test_terminal_removes_intent_from_active_tracking(self):
+    def test_confirm_latches_intent_and_closes_on_removal(self):
+        """(v1.9) 확정은 래치 — 인텐트 유지·재확정 없음, 소멸 시 CONFIRMED_CLOSED 마감."""
         clock = FakeClock()
         cum = {(Side.BUY, Decimal("61000")): Decimal("720")}
         d5 = make_detector(clock, cum=cum)
         d5.on_d1_appeared(appeared())
         d5.evaluate()
-        assert d5.evaluate() == []  # 더 이상 활성 아님
-        assert d5.on_d1_removed(removed()) is None  # 소멸 재확인도 no-op
+        assert d5.evaluate() == []  # 확정 재발화 없음 (래치), 진행 경계도 아직 없음
+        closing = d5.on_d1_removed(removed())
+        assert closing.state is D5TerminalState.CONFIRMED_CLOSED
+        assert closing.level_realized_rate == Decimal("0.6")
+        assert d5.on_d1_removed(removed()) is None  # 마감 후 재확인은 no-op
 
 
 # ── 소멸(D1 REMOVED) 4분류 우선순위 ───────────────────────────
@@ -295,3 +299,58 @@ class TestProgress:
         d5.on_d1_appeared(appeared())
         events = d5.evaluate()
         assert [e.boundary_pct for e in events] == [Decimal("0.2"), Decimal("0.4")]
+
+
+# ── 케이스1 확정 래치 후 진행률 무상한 (PRD §8 D5 v1.9) ───────
+
+
+class TestConfirmedLatchProgress:
+    KEY = (Side.BUY, Decimal("61000"))
+
+    def confirmed_detector(self, cum_qty="720"):
+        clock = FakeClock()
+        cum = {self.KEY: Decimal(cum_qty)}
+        d5 = make_detector(clock, cum=cum)
+        d5.on_d1_appeared(appeared())
+        events = d5.evaluate()
+        assert events[-1].state is D5TerminalState.EXECUTION_CONFIRMED
+        return d5, cum
+
+    def test_progress_continues_past_100pct_after_confirm(self):
+        d5, cum = self.confirmed_detector()  # 60% 확정
+        cum[self.KEY] = Decimal("1450")  # 리필 재흡수 — 120.8%
+        events = d5.evaluate()
+        assert [e.boundary_pct for e in events] == [
+            Decimal("0.8"),
+            Decimal("1.0"),
+            Decimal("1.2"),
+        ]
+        assert all(isinstance(e, D5Progress) and e.series == "case1" for e in events)
+        assert d5.evaluate() == []  # 경계당 1회
+
+    def test_no_second_confirm_while_latched(self):
+        d5, cum = self.confirmed_detector()
+        cum[self.KEY] = Decimal("1450")
+        assert not any(isinstance(e, D5Terminal) for e in d5.evaluate())
+
+    def test_boundary_skipped_by_confirm_jump_fires_next_evaluate(self):
+        # 급등 확정(0→85%): 확정 1회만, 이미 넘어선 80% 경계는 다음 evaluate에서 발화
+        d5, _ = self.confirmed_detector(cum_qty="1020")  # 85%
+        events = d5.evaluate()
+        assert [e.boundary_pct for e in events] == [Decimal("0.8")]
+
+    def test_removal_after_extended_progress_records_final_rate(self):
+        d5, cum = self.confirmed_detector()
+        cum[self.KEY] = Decimal("1450")
+        d5.evaluate()
+        closing = d5.on_d1_removed(removed(attribution=D1Attribution.FILLED))
+        assert closing.state is D5TerminalState.CONFIRMED_CLOSED
+        assert closing.level_realized_rate == Decimal("1450") / Decimal("1200")
+
+    def test_reset_interrupts_latched_intent_with_final_rate(self):
+        d5, cum = self.confirmed_detector()
+        cum[self.KEY] = Decimal("1450")
+        events = d5.reset()
+        assert len(events) == 1
+        assert events[0].state is D5TerminalState.INTERRUPTED
+        assert events[0].level_realized_rate == Decimal("1450") / Decimal("1200")

@@ -8,6 +8,10 @@
   판정이 불필요하다(D3와 의미가 다름: D3="관통 없이 버텼는가", D5 케이스1=
   "실제로 그만큼 체결됐는가" — 관통 여부 무관, PRD 원문에 관통 배제 조건 없음).
   조건 충족 즉시 발화(지연 없음, PRD "임계는 넘는 순간 즉시 발화").
+  **(v1.9) 확정은 종국이 아닌 래치** — 발화 1회 후 인텐트는 유지되고 진행률
+  경계가 상한 없이 계속된다(80%, 100%, 120%, …). 벽 소멸 시 CONFIRMED_CLOSED
+  (로그만)로 마감 — 확정이 인텐트를 소모해 벽 생존 중 흡수 감시가 꺼지는 문제
+  (v1.6이 케이스2에 지적한 파생 결함 ③의 케이스1 버전) 해소.
 - **케이스2 (INFERRED_ABOVE)**: 상위 구간(의도 레벨과 같은 side 현재가 사이)
   D4 lifetime `refill_added` 합 ≥ `S × REALIZE_PCT_ABOVE` — 리필 확인분만 합산
   (단순 체결량 아님, 오탐 방지). 귀속 불가로 "추정" 등급.
@@ -23,8 +27,8 @@
   `reset()`이 이벤트를 반환하는 이유. 호출자는 D4의 lifetime 리필이 지워지기
   전에 이걸 먼저 호출해야 한다 — service.py 배선 순서 참고).
 - **진행률**: 실현률이 `progress_step_pct` 경계를 넘을 때마다 계열(케이스1/2)별
-  독립 커서로 발화, `realize_pct`/`realize_pct_above` 미만 경계만(그 이상은
-  종국 알림이 대체).
+  독립 커서로 발화. 확정 전에는 `realize_pct`/`realize_pct_above` 미만 경계만
+  (그 이상은 확정 알림이 대체), 케이스1 확정 래치 후에는 상한 없음 (v1.9).
 
 모든 종국 레코드는 레벨 실현률과 상위 구간 추정 실현률을 함께 남긴다(PRD) —
 6개 종국 상태가 필드셋이 동일해 단일 `D5Terminal{state}`로 통합했다(D1처럼
@@ -52,8 +56,9 @@ MAX_ACTIVE_INTENTS = 1000  # 방어적 메모리 상한 — SIZE_THRESHOLD 벽 �
 
 
 class D5TerminalState(enum.Enum):
-    EXECUTION_CONFIRMED = "execution_confirmed"
+    EXECUTION_CONFIRMED = "execution_confirmed"  # (v1.9) 종국이 아닌 래치 — 발화 후 인텐트 유지
     EXECUTION_INFERRED_ABOVE = "execution_inferred_above"
+    CONFIRMED_CLOSED = "confirmed_closed"  # (v1.9) 확정 래치 후 벽 소멸 — 최종 실현률 기록
     PARTIALLY_EXECUTED = "partially_executed"
     INTENT_WITHDRAWN = "intent_withdrawn"
     INTERRUPTED = "interrupted"
@@ -61,6 +66,7 @@ class D5TerminalState(enum.Enum):
 
 _LOG_ONLY_STATES = frozenset(
     {
+        D5TerminalState.CONFIRMED_CLOSED,
         D5TerminalState.PARTIALLY_EXECUTED,
         D5TerminalState.INTENT_WITHDRAWN,
         D5TerminalState.INTERRUPTED,
@@ -103,6 +109,7 @@ class _Intent:
     registered_at: float
     case1_cursor: int = 0
     case2_cursor: int = 0
+    confirmed: bool = False  # 케이스1 확정 래치 (PRD §8 D5 v1.9)
 
 
 class D5Detector:
@@ -149,6 +156,10 @@ class D5Detector:
             return None
 
         level_rate = self._level_rate(intent)
+        if intent.confirmed:
+            # 확정 래치 마감 — 소멸 통지는 D1 REMOVED 알림 몫, 여기는 최종
+            # 실현률 기록용 로그 전용 종국 (PRD §8 D5 v1.9)
+            return self._finalize(intent, D5TerminalState.CONFIRMED_CLOSED, level_rate)
         if level_rate >= self._realize_pct:
             return self._finalize(intent, D5TerminalState.EXECUTION_CONFIRMED, level_rate)
 
@@ -165,8 +176,12 @@ class D5Detector:
         events: list[D5Event] = []
         for key, intent in list(self._intents.items()):
             level_rate = self._level_rate(intent)
+            if intent.confirmed:
+                # 확정 래치 후 — 판정 없음, case1 진행 경계만 상한 없이 (v1.9)
+                events += self._progress_events(intent, "case1", level_rate, None)
+                continue
             if level_rate >= self._realize_pct:
-                events.append(self._finalize(intent, D5TerminalState.EXECUTION_CONFIRMED, level_rate))
+                events.append(self._confirm_latch(intent, level_rate))
                 continue
 
             above_rate = self._above_rate(intent)
@@ -200,6 +215,28 @@ class D5Detector:
         self._intents.clear()
         return events
 
+    def _confirm_latch(self, intent: _Intent, level_rate: Decimal) -> D5Terminal:
+        """케이스1 확정 — 종국이 아닌 래치 (PRD §8 D5 v1.9): 발화 1회, 인텐트 유지.
+
+        임계 이하 진행 경계는 확정 알림이 대체하므로 case1 커서를 임계 위치로
+        당긴다 — 확정 시점에 이미 넘어선 상위 경계(예: 급등 0.85)는 다음
+        evaluate에서 진행률로 발화된다.
+        """
+        intent.confirmed = True
+        intent.case1_cursor = max(
+            intent.case1_cursor, int(self._realize_pct / self._progress_step_pct)
+        )
+        return D5Terminal(
+            intent_id=intent.intent_id,
+            side=intent.side,
+            price=intent.price,
+            registered_qty=intent.registered_qty,
+            state=D5TerminalState.EXECUTION_CONFIRMED,
+            level_realized_rate=level_rate,
+            above_realized_rate=self._above_rate(intent),
+            registered_seconds=self._monotonic() - intent.registered_at,
+        )
+
     def _level_rate(self, intent: _Intent) -> Decimal:
         return self._cum_traded(intent.side, intent.price) / intent.registered_qty
 
@@ -227,8 +264,9 @@ class D5Detector:
         )
 
     def _progress_events(
-        self, intent: _Intent, series: str, rate: Decimal, terminal_threshold: Decimal
+        self, intent: _Intent, series: str, rate: Decimal, terminal_threshold: Decimal | None
     ) -> list[D5Progress]:
+        """terminal_threshold=None이면 경계 상한 없음 — 확정 래치 후 (v1.9)."""
         cursor_attr = "case1_cursor" if series == "case1" else "case2_cursor"
         cursor = getattr(intent, cursor_attr)
         target = int(rate / self._progress_step_pct)
@@ -236,8 +274,8 @@ class D5Detector:
         while cursor < target:
             cursor += 1
             boundary = self._progress_step_pct * cursor
-            if boundary >= terminal_threshold:
-                break  # 종국 임계 이상 경계는 종국 알림이 대체 (PRD)
+            if terminal_threshold is not None and boundary >= terminal_threshold:
+                break  # 확정 전: 임계 이상 경계는 확정/추정 알림이 대체 (PRD)
             events.append(
                 D5Progress(
                     intent_id=intent.intent_id,
