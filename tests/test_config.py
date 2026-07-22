@@ -14,7 +14,7 @@ def test_load_example_config():
     assert config.symbol == "BTC/USDT"
     assert config.thresholds.size_threshold_btc == 1000.0
     assert config.thresholds.iceberg_min_trades == 5
-    assert config.alerts.send_d1 is True  # 튜닝 기간 on (52230f2 — PRD §9.1 "튜닝 기간에만 on 권장")
+    assert config.alerts.send_d1 is True  # 기본 on (PRD v1.10 — 52230f2에서 임시 on으로 시작해 정식 승격)
     assert config.alerts.send_d2 is True
     assert config.wall_tracker.record_min_qty_btc == 100.0
     assert config.wall_tracker.ttl_days == 7.0

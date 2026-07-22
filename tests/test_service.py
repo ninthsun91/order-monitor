@@ -162,7 +162,7 @@ def test_d1_appeared_flows_to_alert_queue_when_enabled(tmp_path):
 
 
 def test_d1_alert_gated_off(tmp_path):
-    # 게이트 검증 — example 기본값이 튜닝 기간 on(52230f2)이라 명시적으로 off
+    # 게이트 검증 — example 기본값이 on(PRD v1.10)이라 명시적으로 off
     svc = make_service(config_with(persist_seconds=1e-9, send_d1=False), tmp_path)
     start_feed(svc)
     svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
