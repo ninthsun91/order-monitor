@@ -2,10 +2,12 @@
 
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v1.7 |
-| 작성일 | 2026-07-11 (v1.1/v1.2 개정 동일, v1.3은 2026-07-12, v1.4는 2026-07-13, v1.5는 2026-07-14, v1.6/v1.7은 2026-07-15) |
+| 문서 버전 | v1.8 |
+| 작성일 | 2026-07-11 (v1.1/v1.2 개정 동일, v1.3은 2026-07-12, v1.4는 2026-07-13, v1.5는 2026-07-14, v1.6/v1.7은 2026-07-15, v1.8은 2026-07-22) |
 | 상태 | Draft |
 | 대상 | 단일 개발자(운영자 겸), Claude Code 기반 개발 |
+
+> **v1.8 개정 (2026-07-22, 실운영 7일 전수 감사 — 사용자 확정)**: **D1 APPEARED 알림은 임계 스트릭당 1회** (§8 D1, §12.1). 실측(07-22 감사): APPEARED 19건 vs REMOVED 8건 — 차이 11건 전부가 재시작(8)·재연결(3) 후 같은 벽의 재발화로, `send_d1` 활성화 이후 동일 벽 알림이 반복 수신됨. 원인: D1 활성 latch는 인메모리(epoch 종료·재시작에 리셋 — **D5 인텐트 재등록을 위한 의도된 재발화**, §5.4)인데 지속 타이머 `first_seen_above_threshold`는 영속(§12.1 규칙 2)이라, 복원 벽이 재확인되는 즉시 지속 필터를 통과해 재발화한다. 해소: 탐지 이벤트는 그대로 유지(D5 재등록·로그)하고 **텔레그램 발송만** 스트릭 키로 1회 제한 — `walls.appeared_alerted_since`(발송된 스트릭의 `first_seen_above_threshold` 값)를 영속하고, 같으면 억제(로그만)·다르면 발송+마킹. 임계 하회 후 재돌파는 스트릭 값이 바뀌므로 새 등장으로 재통지되고, REMOVED는 latch 구조상 중복이 없어 무변경. 사용자 판단: 정기 호가벽 리포트가 "지금도 있음"을 커버하므로 중간 재통지는 정보 가치 없음 — **생성 1회 + 해소 1회**.
 
 > **v1.7 개정 (2026-07-15, M5 외부 워치독 구현 — 사용자 확정)**: **PROCESS_DOWN 외부 워치독 동작 명세화** (§11.1). 하트비트 = service가 `heartbeat_interval`(10s) 주기로 파일 mtime을 touch하는 **이벤트 루프 생존 신호** (경로는 CLI `--heartbeat-file` — §10 config 키 전수 고정 유지, `--db-file` 관례). 외부 워치독은 systemd timer(60s 주기, cron 기각 — 배포가 systemd 일원화) 구동의 시스템 python3 stdlib 스크립트(`deploy/watchdog_check.py`, 앱 venv 미사용 — venv 붕괴 시에도 동작해야 하는 최후 방어선)로, mtime 나이 > 60s(스크립트 상수, interval×6)면 stale 판정. 동작 확장: 감지 시 알림만이 아니라 **PROCESS_DOWN 알림 + `systemctl restart` 자동 재시작** — 행 상태는 Restart=always로도 복구되지 않아(프로세스 생존) 수동 개입까지 감시 공백이 지속되는데, 인메모리 상태는 어차피 리셋 설계(§12)라 재시작 비용이 낮다. 알림 정책: 정지 전이 1회 + 해소 전이 1회, 반복 재알림 없음. `systemctl is-active` == inactive(의도적 정지, 유지보수)는 스킵 — 오알림/오재시작 방지. 발송 실패는 재시작을 막지 않는다(부분 실패 격리).
 >
@@ -182,6 +184,8 @@ diff 스트림으로 full book을 유지하려면 REST 스냅샷 + U/u 시퀀스
 1. 어떤 레벨의 `last_qty ≥ SIZE_THRESHOLD` (1000 BTC — 확정값, §15 #1. Binance 현물에서 "전달력 있는" 매수/매도 유동성 기준)
 2. 그 상태가 `PERSIST_SECONDS`(3s) 이상 연속 유지 ← **스푸핑 1차 필터**
 3. 해당 레벨에 대해 미발화 상태 (레벨당 1회, 레벨이 임계 밑으로 내려갔다 다시 올라오면 리셋)
+
+**알림 1회 규칙 (v1.8)**: 텔레그램 발송은 임계 스트릭(`first_seen_above_threshold` 값)당 1회다. 재시작 복원·epoch 재시작 후의 APPEARED 재발화는 D5 인텐트 재등록(§8 D5)을 위한 내부 이벤트로 유지하되, 발송은 `walls.appeared_alerted_since`(발송 시 스트릭 값 기록·영속, §12.1)와의 비교로 억제한다(억제 시 로그만). 스트릭 값이 바뀐 재돌파(임계 하회 후 재상승)와 REMOVED 후 재출현은 새 등장으로 발송한다.
 
 **제거(REMOVED) 조건** — 활성 레벨의 `last_qty < SIZE_THRESHOLD × EXIT_RATIO`(0.5)로 하락 시, 감소 원인을 판정하여 발화:
 - `cum_traded_at_level ≥ (peak_qty − last_qty) × FILL_ATTRIBUTION`(0.7) → **`FILLED`** (실체결로 소진)
@@ -493,7 +497,7 @@ watchdog:
 
 원거리 벽 시야는 diff 이벤트의 **청취 누적**으로만 얻어지므로, 재시작 때마다 초기화하면 재수렴에 수 분~수 일이 걸린다. 따라서 `walls` 테이블을 두고 레지스트리를 동기화·복원한다.
 
-- **저장 필드**: `price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since` — `last_seen_at`은 판정 미사용, 관측·튜닝용 (§7 v1.2)
+- **저장 필드**: `price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since, appeared_alerted_since` — `last_seen_at`은 판정 미사용, 관측·튜닝용 (§7 v1.2). `appeared_alerted_since`(v1.8)는 APPEARED 알림이 발송된 스트릭의 `first_seen_above_threshold` 값 — 알림 1회 규칙(§8 D1)의 멱등 키로, 재시작을 넘어 보존되어야 억제가 성립한다
 - **staleness 처리**: 신뢰도 하락은 **청취 공백**(프로세스 다운타임, WS 재연결 갭)에서만 발생한다 — 연결이 살아있는 동안 이벤트가 없다는 것은 "변화 없음"을 뜻하므로 값은 유효하다. 규칙:
   1. 청취 공백 발생 시(재시작 복원 직후, **diff 스트림**의 단절·staleness·U/u 갭 직후 — §5.4. aggTrade/depth만의 공백은 해당 없음) 레지스트리 전체를 `unconfirmed`로 마킹하고 `unconfirmed_since`를 기록한다 (이미 unconfirmed인 항목의 `unconfirmed_since`는 갱신하지 않음 — 최초 마킹 시각 유지)
   2. `unconfirmed` 레벨은 D1 APPEARED 신규 발화를 억제하되, `first_seen_above_threshold`를 보존한다 — 스푸핑 지속시간 필터 타이머(§8 D1)를 리셋하지 않기 위함 (v1.2 정정: 구판은 이 타이머의 기준 필드를 `first_seen_at`으로 오기했음. `first_seen_at`도 관측 데이터로 함께 보존한다)

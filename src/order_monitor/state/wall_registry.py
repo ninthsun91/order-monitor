@@ -40,6 +40,10 @@ class Wall:
     last_seen_at: float  # 판정 미사용 — 관측·튜닝용 (PRD §7 v1.2)
     unconfirmed: bool = False
     unconfirmed_since: float | None = None
+    # 알림이 발송된 임계 스트릭(발송 시점의 first_seen_above_threshold 값) —
+    # APPEARED 알림 스트릭당 1회 규칙의 멱등 키 (PRD §8 D1 v1.8). 레지스트리는
+    # 보존·영속만 하고 기록은 service의 발송 게이트 몫
+    appeared_alerted_since: float | None = None
 
 
 @dataclasses.dataclass(frozen=True)

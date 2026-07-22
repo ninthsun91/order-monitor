@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS walls (
     last_seen_at REAL NOT NULL,
     unconfirmed INTEGER NOT NULL DEFAULT 0,
     unconfirmed_since REAL,
+    appeared_alerted_since REAL,
     PRIMARY KEY (side, price)
 )
 """
@@ -42,6 +43,10 @@ class WallStore:
         self._conn = sqlite3.connect(str(path))
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(_SCHEMA)
+        # v1.8 마이그레이션 — 기존 배포 DB에 appeared_alerted_since 컬럼 추가
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(walls)")}
+        if "appeared_alerted_since" not in columns:
+            self._conn.execute("ALTER TABLE walls ADD COLUMN appeared_alerted_since REAL")
         self._conn.commit()
 
     def close(self) -> None:
@@ -50,7 +55,8 @@ class WallStore:
     def load(self) -> list[Wall]:
         rows = self._conn.execute(
             "SELECT side, price, last_qty, peak_qty, first_seen_at,"
-            " first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since"
+            " first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since,"
+            " appeared_alerted_since"
             " FROM walls"
         ).fetchall()
         return [
@@ -64,6 +70,7 @@ class WallStore:
                 last_seen_at=row[6],
                 unconfirmed=bool(row[7]),
                 unconfirmed_since=row[8],
+                appeared_alerted_since=row[9],
             )
             for row in rows
         ]
@@ -71,14 +78,16 @@ class WallStore:
     def upsert(self, wall: Wall) -> None:
         self._conn.execute(
             "INSERT INTO walls (side, price, last_qty, peak_qty, first_seen_at,"
-            " first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since,"
+            " appeared_alerted_since)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT (side, price) DO UPDATE SET"
             " last_qty=excluded.last_qty, peak_qty=excluded.peak_qty,"
             " first_seen_at=excluded.first_seen_at,"
             " first_seen_above_threshold=excluded.first_seen_above_threshold,"
             " last_seen_at=excluded.last_seen_at, unconfirmed=excluded.unconfirmed,"
-            " unconfirmed_since=excluded.unconfirmed_since",
+            " unconfirmed_since=excluded.unconfirmed_since,"
+            " appeared_alerted_since=excluded.appeared_alerted_since",
             (
                 wall.side.value,
                 _canonical(wall.price),
@@ -89,8 +98,14 @@ class WallStore:
                 wall.last_seen_at,
                 int(wall.unconfirmed),
                 wall.unconfirmed_since,
+                wall.appeared_alerted_since,
             ),
         )
+
+    def save(self, wall: Wall) -> None:
+        """단건 upsert + 즉시 commit — diff 배치(sync_diff) 밖의 단발 갱신용 (알림 스트릭 마킹)."""
+        self.upsert(wall)
+        self._conn.commit()
 
     def delete(self, side: Side, price: Decimal) -> None:
         self._conn.execute(

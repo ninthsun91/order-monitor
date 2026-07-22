@@ -133,7 +133,7 @@ def test_restart_restores_walls_as_unconfirmed(tmp_path):
 # ── M2 배선: 디텍터 판정 + 알림 (PRD §5.4 epoch 게이팅, §9.1) ──
 
 
-def config_with(*, persist_seconds=None, send_d1=None):
+def config_with(*, persist_seconds=None, send_d1=None, cooldown_seconds=None):
     import dataclasses
 
     config = load_config(EXAMPLE_CONFIG)
@@ -144,6 +144,10 @@ def config_with(*, persist_seconds=None, send_d1=None):
     if send_d1 is not None:
         config = dataclasses.replace(
             config, alerts=dataclasses.replace(config.alerts, send_d1=send_d1)
+        )
+    if cooldown_seconds is not None:
+        config = dataclasses.replace(
+            config, alerts=dataclasses.replace(config.alerts, cooldown_seconds=cooldown_seconds)
         )
     return config
 
@@ -163,6 +167,78 @@ def test_d1_alert_gated_off_by_default(tmp_path):
     svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
     assert svc.telegram.pending() == 0  # send_d1 기본 off (PRD §9.1)
     svc._store.close()
+
+
+# ── v1.8: APPEARED 알림은 임계 스트릭당 1회 (PRD §8 D1) ──
+
+
+def d1_alert_config():
+    # cooldown 0 — 스트릭 게이트만이 억제 요인임을 보장 (쿨다운과의 교란 제거)
+    return config_with(persist_seconds=1e-9, send_d1=True, cooldown_seconds=0)
+
+
+def resume_feed(svc, first_id, final_id, qty):
+    """재시작/재연결 후 epoch 재개 + 60000 벽 재확인 diff 1건."""
+    svc.on_connected()
+    svc.on_event(DEPTH, depth_event())
+    svc.on_event(AGG, agg_event())
+    svc.on_event(DIFF, diff_event(first_id, final_id, bids=[("60000", qty)]))
+
+
+def test_d1_alert_suppressed_on_restart_refire(tmp_path):
+    svc1 = make_service(d1_alert_config(), tmp_path)
+    start_feed(svc1)
+    svc1.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
+    assert svc1.telegram.pending() == 1  # 최초 스트릭 — 발송 + 마킹
+    svc1._store.close()
+
+    svc2 = make_service(d1_alert_config(), tmp_path)
+    resume_feed(svc2, 500, 510, "1250")  # 복원 벽 재확인 → D1 재발화
+    assert (Side.BUY, Decimal("60000")) in svc2.d5._intents  # D5 재등록은 유지
+    assert svc2.telegram.pending() == 0  # 같은 스트릭 — 발송 억제
+    svc2._store.close()
+
+
+def test_d1_alert_suppressed_on_reconnect_refire(tmp_path):
+    svc = make_service(d1_alert_config(), tmp_path)
+    start_feed(svc)
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
+    assert svc.telegram.pending() == 1
+    svc.on_disconnected()  # epoch 종료 → D1 latch 리셋 (재발화 전제)
+    resume_feed(svc, 200, 210, "1250")
+    assert (Side.BUY, Decimal("60000")) in svc.d5._intents
+    assert svc.telegram.pending() == 1  # 같은 스트릭 재발화 — 발송 억제
+    svc._store.close()
+
+
+def test_d1_alert_resent_on_new_streak_after_removed(tmp_path):
+    svc = make_service(d1_alert_config(), tmp_path)
+    start_feed(svc)
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
+    assert svc.telegram.pending() == 1
+    # exit(500) 미만 하락 → REMOVED 발송 (하한 100 이상이라 레지스트리 잔존, 스트릭 리셋)
+    svc.on_event(DIFF, diff_event(121, 130, bids=[("60000", "300")]))
+    assert svc.telegram.pending() == 2
+    # 재돌파 = 새 스트릭 → 새 등장으로 발송 (다음 diff가 평가 트리거)
+    svc.on_event(DIFF, diff_event(131, 140, bids=[("60000", "1300")]))
+    svc.on_event(DIFF, diff_event(141, 150, bids=[("59500", "150")]))
+    assert svc.telegram.pending() == 3
+    svc._store.close()
+
+
+def test_d1_alert_sent_after_restart_when_streak_never_announced(tmp_path):
+    # 지속 필터 통과 전에 재시작 — 스트릭은 미발송 상태로 영속되므로 억제하면 안 됨
+    svc1 = make_service(
+        config_with(persist_seconds=9999, send_d1=True, cooldown_seconds=0), tmp_path
+    )
+    start_feed(svc1)
+    assert svc1.telegram.pending() == 0
+    svc1._store.close()
+
+    svc2 = make_service(d1_alert_config(), tmp_path)
+    resume_feed(svc2, 500, 510, "1250")
+    assert svc2.telegram.pending() == 1  # 미발송 스트릭 — 억제 없이 발송
+    svc2._store.close()
 
 
 def test_d2_onset_flows_to_alert_queue(service):

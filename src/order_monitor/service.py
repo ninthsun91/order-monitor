@@ -166,7 +166,12 @@ class MonitorService:
         self.telegram = TelegramSender(telegram_token, config.telegram.chat_id)
         self._outbox: AlertsOutboxStore | None = None
         self.dispatcher = AlertDispatcher(
-            config, self.telegram, monotonic=monotonic, clock=clock, outbox=None
+            config,
+            self.telegram,
+            monotonic=monotonic,
+            clock=clock,
+            outbox=None,
+            d1_streak_gate=self._appeared_streak_unalerted,
         )
         self._store: WallStore | None = None
 
@@ -396,6 +401,25 @@ class MonitorService:
             d5_event = self.d5.on_d1_removed(event)
             if d5_event is not None:
                 self._emit(d5_event)
+
+    def _appeared_streak_unalerted(self, event: D1Appeared) -> bool:
+        """dispatcher의 APPEARED 스트릭당 1회 게이트 (PRD §8 D1 v1.8) — 미발송
+        스트릭이면 마킹(영속) 후 True, 이미 발송된 스트릭이면 False.
+
+        재시작·재연결 재발화는 D5 인텐트 재등록에 필요해 이벤트 흐름은 그대로
+        두고 발송만 여기서 걸러진다. 스트릭 키 = `first_seen_above_threshold`
+        (재시작을 넘어 보존, §12.1) — 임계 하회 후 재돌파는 값이 바뀌므로 새
+        등장으로 다시 발송된다.
+        """
+        wall = self.wall_registry.get(event.side, event.price)
+        if wall is None or wall.first_seen_above_threshold is None:
+            return True  # 발화 직후 소멸 등 경합 — 스트릭 식별 불가면 억제 근거도 없음
+        if wall.appeared_alerted_since == wall.first_seen_above_threshold:
+            return False
+        wall.appeared_alerted_since = wall.first_seen_above_threshold
+        if self._store is not None:
+            self._store.save(wall)
+        return True
 
     def _handle_episode_ends(self, ends: list[EpisodeEnd]) -> None:
         """접촉 episode 종료 → D3 확정 판정 발신."""

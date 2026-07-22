@@ -60,6 +60,38 @@ def test_upsert_load_roundtrip(store):
     assert type(restored.price) is Decimal and type(restored.last_qty) is Decimal
 
 
+def test_appeared_alerted_since_roundtrip(store):
+    wall = make_wall(appeared_alerted_since=100.0)
+    store.upsert(wall)
+    assert store.load()[0].appeared_alerted_since == 100.0
+
+
+def test_migration_adds_appeared_alerted_since_column(tmp_path):
+    # v1.8 이전 스키마로 만든 DB가 열리면서 컬럼이 추가되고 기존 행은 None으로 읽힌다
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE walls (
+            side TEXT NOT NULL, price TEXT NOT NULL, last_qty TEXT NOT NULL,
+            peak_qty TEXT NOT NULL, first_seen_at REAL NOT NULL,
+            first_seen_above_threshold REAL, last_seen_at REAL NOT NULL,
+            unconfirmed INTEGER NOT NULL DEFAULT 0, unconfirmed_since REAL,
+            PRIMARY KEY (side, price))"""
+    )
+    conn.execute(
+        "INSERT INTO walls VALUES ('buy', '61000', '1200', '1200', 100.0, 100.0, 100.0, 0, NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    s = WallStore(path)
+    loaded = s.load()
+    assert len(loaded) == 1 and loaded[0].appeared_alerted_since is None
+    s.close()
+
+
 def test_upsert_is_idempotent_across_price_representations(store):
     # "61000.00000000"과 "61000.0"은 같은 레벨 — 행이 갈라지면 안 된다
     store.upsert(make_wall(price="61000.00000000"))

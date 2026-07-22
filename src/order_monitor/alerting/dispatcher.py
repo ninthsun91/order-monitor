@@ -115,6 +115,7 @@ class AlertDispatcher:
         monotonic: Callable[[], float] = time.monotonic,
         clock: Callable[[], float] = time.time,
         outbox: AlertsOutboxStore | None = None,
+        d1_streak_gate: Callable[[D1Appeared], bool] | None = None,
     ) -> None:
         self._symbol = config.symbol
         self._alerts = config.alerts
@@ -124,6 +125,9 @@ class AlertDispatcher:
         self._sender = sender
         self._clock = clock
         self._outbox = outbox
+        # APPEARED 스트릭당 1회 게이트 (PRD §8 D1 v1.8) — service가 벽 레지스트리
+        # 기반 판정·마킹을 주입. None이면 게이트 없음 (기존 동작)
+        self._d1_streak_gate = d1_streak_gate
         # D5 종국/진행률 dedup — 시간 쿨다운이 아닌 순수 멱등(재전송 안전용, PRD §9.2)
         self._d5_sent: set[tuple] = set()
 
@@ -137,7 +141,19 @@ class AlertDispatcher:
             if not self._alerts.send_d1:
                 return False
             key = ("d1", event.side.value, self._bucket(event.price))
-            text = self._format_d1_appeared(event)
+            if not self._deduper.should_send(key):
+                logger.info("alert suppressed by cooldown", extra={"dedup_key": repr(key)})
+                return False
+            # 스트릭당 1회 게이트는 쿨다운 뒤에 평가 — 쿨다운에 눌린 발화가
+            # 스트릭을 소모(마킹)하지 않게 한다 (마킹은 실제 발송 시에만)
+            if self._d1_streak_gate is not None and not self._d1_streak_gate(event):
+                logger.info(
+                    "d1 appeared alert suppressed — streak already announced",
+                    extra={"side": event.side.value, "price": str(event.price)},
+                )
+                return False
+            self._sender.enqueue(self._format_d1_appeared(event))
+            return True
         elif isinstance(event, D1Removed):
             if not self._alerts.send_d1:
                 return False
