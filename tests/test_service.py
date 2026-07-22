@@ -161,11 +161,12 @@ def test_d1_appeared_flows_to_alert_queue_when_enabled(tmp_path):
     svc._store.close()
 
 
-def test_d1_alert_gated_off_by_default(tmp_path):
-    svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
+def test_d1_alert_gated_off(tmp_path):
+    # 게이트 검증 — example 기본값이 튜닝 기간 on(52230f2)이라 명시적으로 off
+    svc = make_service(config_with(persist_seconds=1e-9, send_d1=False), tmp_path)
     start_feed(svc)
     svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
-    assert svc.telegram.pending() == 0  # send_d1 기본 off (PRD §9.1)
+    assert svc.telegram.pending() == 0  # send_d1 off → 미발송 (PRD §9.1)
     svc._store.close()
 
 
@@ -402,7 +403,8 @@ def test_d5_case1_confirmed_through_pipeline_and_recorded_to_outbox(tmp_path):
     from order_monitor.detectors.d1 import D1Appeared
     from order_monitor.detectors.d5 import D5Terminal, D5TerminalState
 
-    svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
+    # send_d1 off — 발송 큐 카운트를 D5 알림만으로 고정 (D1 게이트는 별도 테스트)
+    svc = make_service(config_with(persist_seconds=1e-9, send_d1=False), tmp_path)
     events = capture_emitted(svc)
     start_feed(svc)  # 벽 60000/1200 등록
     svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))  # D1 평가 트리거 → APPEARED
@@ -492,7 +494,8 @@ def test_d5_intent_survives_long_after_registration(tmp_path):
 def test_d5_interrupted_on_epoch_end(tmp_path):
     from order_monitor.detectors.d5 import D5Terminal, D5TerminalState
 
-    svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
+    # send_d1 off — pending 0 단언이 D5 로그 전용 여부만 보게 한다
+    svc = make_service(config_with(persist_seconds=1e-9, send_d1=False), tmp_path)
     events = capture_emitted(svc)
     start_feed(svc)
     svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))  # APPEARED — 인텐트 등록

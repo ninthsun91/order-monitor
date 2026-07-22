@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ def test_load_example_config():
     assert config.symbol == "BTC/USDT"
     assert config.thresholds.size_threshold_btc == 1000.0
     assert config.thresholds.iceberg_min_trades == 5
-    assert config.alerts.send_d1 is False
+    assert config.alerts.send_d1 is True  # 튜닝 기간 on (52230f2 — PRD §9.1 "튜닝 기간에만 on 권장")
     assert config.alerts.send_d2 is True
     assert config.wall_tracker.record_min_qty_btc == 100.0
     assert config.wall_tracker.ttl_days == 7.0
@@ -78,8 +79,9 @@ def test_wall_tracker_unknown_key_raises(tmp_path):
 
 def test_wrong_type_raises(tmp_path):
     bad_config = tmp_path / "config.yaml"
+    # example의 토글 값에 무관하게 주입 (값 문자열 치환은 52230f2에서 한 번 깨졌음)
     bad_config.write_text(
-        EXAMPLE_CONFIG.read_text().replace("send_d1: false", "send_d1: not-a-bool")
+        re.sub(r"send_d1: \S+", "send_d1: not-a-bool", EXAMPLE_CONFIG.read_text())
     )
 
     with pytest.raises(ConfigError, match="alerts.send_d1' must be a bool"):

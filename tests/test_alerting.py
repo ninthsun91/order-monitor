@@ -94,9 +94,10 @@ def summary():
 # ── 발송 정책 on/off (PRD §9.1) ──────────────────────────────
 
 
-def test_send_d1_off_by_default_suppresses_d1_only():
+def test_send_d1_off_suppresses_d1_only():
+    # 게이트 동작 검증 — example의 토글 현재값(튜닝 기간 on, 52230f2)에 의존하지 않게 명시 off
     sender = FakeSender()
-    dispatcher = AlertDispatcher(make_config(), sender, monotonic=FakeClock())
+    dispatcher = AlertDispatcher(make_config(send_d1=False), sender, monotonic=FakeClock())
     assert dispatcher.dispatch(appeared()) is False
     assert dispatcher.dispatch(removed()) is False
     assert dispatcher.dispatch(onset()) is True
