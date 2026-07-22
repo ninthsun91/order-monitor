@@ -35,15 +35,23 @@ def diff(bids=(), asks=(), first_id=1, final_id=1):
 class TestRegistrationGate:
     def test_new_price_below_floor_not_registered(self):
         reg = registry()
-        reg.apply_diff(diff(bids=[("61000", "99.9")]))
+        result = reg.apply_diff(diff(bids=[("61000", "99.9")]))
         assert len(reg) == 0
+        assert result.registrations == []
 
     def test_new_price_at_floor_registered(self):
         reg = registry()
-        reg.apply_diff(diff(bids=[("61000", "100")]))
+        result = reg.apply_diff(diff(bids=[("61000", "100")]))
         wall = reg.get(Side.BUY, Decimal("61000"))
         assert wall.last_qty == Decimal("100")
         assert wall.first_seen_above_threshold is None  # 임계 미만
+        assert result.registrations == [wall]  # 등록 반환 — 궤적 로깅·D4 스트릭 소비
+
+    def test_tracked_update_not_reported_as_registration(self):
+        reg = registry()
+        reg.apply_diff(diff(bids=[("61000", "500")]))
+        result = reg.apply_diff(diff(bids=[("61000", "800")]))
+        assert result.registrations == [] and result.removals == []
 
     def test_both_sides_tracked(self):
         reg = registry()
@@ -65,7 +73,7 @@ class TestTrackedPriceUpdates:
         # PRD §8 D1 v1.2: 1200 → 50 하락이 "하한 미만"으로 무시되면 유령 벽 잔존
         reg = registry()
         reg.apply_diff(diff(bids=[("61000", "1200")]))
-        removals = reg.apply_diff(diff(bids=[("61000", "50")]))
+        removals = reg.apply_diff(diff(bids=[("61000", "50")])).removals
         assert len(removals) == 1
         assert removals[0].reason is RemovalReason.BELOW_FLOOR
         assert removals[0].wall.last_qty == Decimal("50")  # 최종 관측값 반영
@@ -75,7 +83,7 @@ class TestTrackedPriceUpdates:
     def test_tombstone(self):
         reg = registry()
         reg.apply_diff(diff(bids=[("61000", "1200")]))
-        removals = reg.apply_diff(diff(bids=[("61000", "0")]))
+        removals = reg.apply_diff(diff(bids=[("61000", "0")])).removals
         assert removals[0].reason is RemovalReason.TOMBSTONE
         assert removals[0].wall.last_qty == Decimal(0)
         assert len(reg) == 0

@@ -280,9 +280,20 @@ class MonitorService:
                 for d5_event in self.d5.evaluate():
                     self._emit(d5_event)
         elif isinstance(event, DiffDepthEvent):
-            removals = self.wall_registry.apply_diff(event)
+            diff_result = self.wall_registry.apply_diff(event)
+            removals = diff_result.removals
             assert self._store is not None
             self._store.sync_diff(self.wall_registry, event, removals)
+            # 등록/소멸 궤적 로그 (M6 관측 보완 — 준임계 벽 생애 기록, epoch 무관)
+            for wall in diff_result.registrations:
+                logger.info(
+                    "wall registered",
+                    extra={
+                        "side": wall.side.value,
+                        "price": str(wall.price),
+                        "qty": str(wall.last_qty),
+                    },
+                )
             for removal in removals:
                 logger.info(
                     "wall removed",

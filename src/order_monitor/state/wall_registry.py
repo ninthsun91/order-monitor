@@ -52,6 +52,15 @@ class WallRemoval:
     reason: RemovalReason
 
 
+@dataclasses.dataclass(frozen=True)
+class DiffResult:
+    """apply_diff 1회분의 등록/소멸 — 등록은 궤적 로깅·D4 스트릭 개시의 소비 대상
+    (DEVELOPMENT_PLAN M6 관측 보완, PRD §8 D4 v1.12 스트릭)."""
+
+    registrations: list[Wall]
+    removals: list[WallRemoval]
+
+
 class WallRegistry:
     def __init__(
         self,
@@ -64,16 +73,19 @@ class WallRegistry:
         self._clock = clock
         self._walls: dict[tuple[Side, Decimal], Wall] = {}
 
-    def apply_diff(self, event: DiffDepthEvent) -> list[WallRemoval]:
+    def apply_diff(self, event: DiffDepthEvent) -> DiffResult:
+        registrations: list[Wall] = []
         removals: list[WallRemoval] = []
         for side, levels in ((Side.BUY, event.bids), (Side.SELL, event.asks)):
             for price, qty in levels:
-                removal = self._apply_level(side, price, qty)
-                if removal is not None:
-                    removals.append(removal)
-        return removals
+                outcome = self._apply_level(side, price, qty)
+                if isinstance(outcome, Wall):
+                    registrations.append(outcome)
+                elif isinstance(outcome, WallRemoval):
+                    removals.append(outcome)
+        return DiffResult(registrations=registrations, removals=removals)
 
-    def _apply_level(self, side: Side, price: Decimal, qty: Decimal) -> WallRemoval | None:
+    def _apply_level(self, side: Side, price: Decimal, qty: Decimal) -> Wall | WallRemoval | None:
         now = self._clock()
         key = (side, price)
         wall = self._walls.get(key)
@@ -82,7 +94,7 @@ class WallRegistry:
             # 등록 게이트는 신규 가격에만 적용 (PRD §8 D1 소멸 규칙)
             if qty < self._record_min_qty:
                 return None
-            self._walls[key] = Wall(
+            wall = Wall(
                 price=price,
                 side=side,
                 last_qty=qty,
@@ -91,7 +103,8 @@ class WallRegistry:
                 first_seen_above_threshold=now if qty >= self._size_threshold else None,
                 last_seen_at=now,
             )
-            return None
+            self._walls[key] = wall
+            return wall
 
         # 추적 중인 가격: 값 불문 처리 + unconfirmed 해제 (PRD §12.1 규칙 3)
         wall.last_qty = qty

@@ -128,13 +128,13 @@ def test_sync_diff_mirrors_registry(store):
     reg = WallRegistry(record_min_qty=FLOOR, size_threshold=THRESHOLD, clock=clock)
 
     event = diff(bids=[("61000", "1200")], asks=[("65000", "150"), ("64000", "50")])
-    removals = reg.apply_diff(event)
+    removals = reg.apply_diff(event).removals
     store.sync_diff(reg, event, removals)
     assert store.count() == 2  # 64000은 하한 미만 신규 → 미등록·미기록
 
     # 소멸 미러링
     event2 = diff(bids=[("61000", "0")])
-    removals2 = reg.apply_diff(event2)
+    removals2 = reg.apply_diff(event2).removals
     store.sync_diff(reg, event2, removals2)
     loaded = store.load()
     assert [w.price for w in loaded] == [Decimal("65000")]
@@ -146,7 +146,7 @@ def test_restart_restore_flow(tmp_path):
     store = WallStore(tmp_path / "walls.db")
     reg = WallRegistry(record_min_qty=FLOOR, size_threshold=THRESHOLD, clock=clock)
     event = diff(bids=[("61000", "1364.86")])
-    store.sync_diff(reg, event, reg.apply_diff(event))
+    store.sync_diff(reg, event, reg.apply_diff(event).removals)
     store.close()
 
     # 세션 2: 복원 → 전체 unconfirmed 마킹 (PRD §12.1 규칙 1) → 이벤트로 해제
@@ -163,7 +163,7 @@ def test_restart_restore_flow(tmp_path):
     assert store2.load()[0].unconfirmed
 
     event2 = diff(bids=[("61000", "1300")])
-    store2.sync_diff(reg2, event2, reg2.apply_diff(event2))
+    store2.sync_diff(reg2, event2, reg2.apply_diff(event2).removals)
     assert not store2.load()[0].unconfirmed  # 해제도 영속화됨
     store2.close()
 
@@ -174,7 +174,7 @@ def test_prune_mirror(tmp_path):
     store = WallStore(tmp_path / "walls.db")
     reg = WallRegistry(record_min_qty=FLOOR, size_threshold=THRESHOLD, clock=clock)
     event = diff(bids=[("61000", "1200")])
-    store.sync_diff(reg, event, reg.apply_diff(event))
+    store.sync_diff(reg, event, reg.apply_diff(event).removals)
     reg.mark_all_unconfirmed()
     store.mark_all_unconfirmed(since=0.0)
 
