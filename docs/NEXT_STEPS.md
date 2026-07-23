@@ -8,15 +8,15 @@
 
 ---
 
-## 1. M6 본류 — SQLite 영속화 + 튜닝 루프
+## 1. M6 본류 — 튜닝 루프 (영속화 완료, 실데이터 대기)
 
 **참조**: DEVELOPMENT_PLAN "M6" 절 전체, PRD §12(스키마)·§13(오탐 지표).
 
-- `events`/`intents` 테이블 (모든 디텍터 이벤트·상태 전이 DB 기록 — 현재는 JSON-lines만)
-- 재시작 시 진행 중 intent DB `INTERRUPTED` 마킹
+(2026-07-23 완료: `events`/`intents` 테이블 + 전 디텍터 이벤트 DB 기록 + 재시작 시 열린 인텐트 `INTERRUPTED` 마킹 — 스키마 형태는 결정 기록 2026-07-23, pytest 432건. 배포 시 config 변경 없음 — 테이블은 기동 시 자동 생성. **1주 데이터 수집 시계는 이 코드의 배포 시점부터 시작.**)
+
 - 1주 레지스트리 분포 분석 → `size_threshold_btc`(1000)·`record_min_qty_btc`(100) 재검토 (오픈 퀘스천 #1의 실데이터 검증)
 - 임계치 1차 튜닝 + 오탐 지표 확정 (D5 오탐 주 1건 이하, D1/D2 시간당 3건 이하 — PRD §13)
-- (선택) 일일 요약 메시지
+- (선택) 일일 요약 메시지 (2026-07-23 사용자 확정 — 영속화 범위에서 제외, 별도 작업)
 
 **튜닝 대기 잠정값 목록** (실데이터로 재검토할 것들):
 - D4: `absorb_multiple` 2.0, `absorb_progress_step` 0.5, `absorb_min_events` 5, `refill_window_ms` 500 (전부 v1.11 잠정 — **`d4 streak summary` near-miss 분포가 근거 데이터**, 가시/은닉 분해 타당성은 `d4 absorb event` 로그로 검증)

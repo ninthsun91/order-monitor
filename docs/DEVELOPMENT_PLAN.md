@@ -28,9 +28,9 @@ M0–M5 상세(체크박스·구현 노트·검증 기록)는 [MILESTONE_ARCHIVE
 
 ## M6 — SQLite 영속화 + 임계치 튜닝 루프
 
-- [ ] SQLite 스키마: `events`, `intents`, `trades_sample`(선택) (PRD §12 — `walls`는 M1, `alerts_outbox`는 M4 선행)
-- [ ] 모든 디텍터 이벤트/상태 전이 기록
-- [ ] 재시작 시 진행 중 intent를 DB에 `INTERRUPTED` 마킹
+- [x] SQLite 스키마: `events`, `intents` (PRD §12 — `walls`는 M1, `alerts_outbox`는 M4 선행. `trades_sample`(선택)은 미도입 — 필요 확인 시 별도) → **완료 2026-07-23** (`persistence/events.py`·`persistence/intents.py` — 스키마 형태는 결정 기록 2026-07-23 참고: events는 payload JSON 단일 테이블 + side/price 조회 승격, intents는 인텐트당 1행 + 상태 갱신·전이 이력은 events 소관, 키 `(run_started_at, intent_id)`)
+- [x] 모든 디텍터 이벤트/상태 전이 기록 → **완료 2026-07-23** (`_emit` 관문에서 전 이벤트 적재 — payload는 JSON-lines 로그와 동일 직렬화라 로그/DB 동일 필드 조회. D5 인텐트는 등록 active → 확정 confirmed 래치(v1.9, 열린 상태) → 종국을 호출부 문맥 배선으로 기록 — evaluate() 경유 EXECUTION_CONFIRMED는 래치, on_d1_removed/reset() 경유는 종국)
+- [x] 재시작 시 진행 중 intent를 DB에 `INTERRUPTED` 마킹 → **완료 2026-07-23** (startup()에서 열린 행(active·confirmed) 일괄 UPDATE — 정상 epoch 종료는 D5 reset()이 이미 종국을 기록하므로 여기 걸리는 건 크래시 잔여분. 복원은 하지 않음 — §12 원칙)
 - [ ] 1주 벽 레지스트리 기록(`record_min_qty_btc` 이상) 분포 분석 → `SIZE_THRESHOLD`·`record_min_qty_btc` 재검토 (OQ #1 확정값 1000의 실데이터 검증 — v1.1 이후 D1 소스는 top-20이 아닌 벽 레지스트리)
 - [ ] 나머지 임계치 1차 튜닝 (오탐/침묵 리뷰)
 - [x] **(2026-07-22 백로그, PRD v1.11)** D4 재구현 — 레벨 흡수 방어 디텍터 (§8 D4 v1.11이 기준) → **완료 2026-07-23** (스펙 검토 보강 3건 = PRD v1.12 선행 확정 후 구현 — 결정 기록 2026-07-23. 1틱 이월 보정·epoch 시작 스트릭 재개시 포함, 관통·활성 게이트는 구조적 충족 — d4.py docstring. **VPS 배포 시 config.yaml 동시 수정 필수** — config.example.yaml 대조): `detectors/d4.py` 전면 교체(스트릭 생애 누적, 가시 리필 페어링 + 틱 단위 은닉 리필 대조, 배수 판정 + 래치/진행/종결), service 배선 복원, config 키 교체(`absorb_multiple`/`absorb_progress_step`/`absorb_min_events` 신설, `iceberg_margin_btc`·`iceberg_min_trades`·`realize_pct_above` 삭제 — **배포 시 VPS config.yaml도 동시 수정**, 엄격 스키마), `send_d4` 추가, d5의 `refill_above_lookup` 파라미터·`EXECUTION_INFERRED_ABOVE` 잔재 제거, 구 D4 단위 테스트 교체 + replay 골든 재생성. **관측 기록 포함**(§8 D4 v1.11): 흡수 인정 이벤트 단위 로그 + 스트릭 종료 요약 로그(발화 무관, absorbed > 0 전건) — 임계 미달 near-miss 분포가 `absorb_multiple` 튜닝의 직접 근거
@@ -43,6 +43,7 @@ M0–M5 상세(체크박스·구현 노트·검증 기록)는 [MILESTONE_ARCHIVE
 **완료 기준 (PRD)**: 1주 데이터 기반 임계치 1차 확정.
 
 검증 기록:
+- 2026-07-23 events/intents 영속화: pytest 432건 전건 통과 (신규 16건 — EventStore 단위 6: 직렬화/승격/canonical/이력 보존, IntentStore 단위 6: 전이/런 간 키/기동 마킹 멱등, service 파이프라인 4: 이벤트 기록·인텐트 풀사이클(등록→래치→종국)·epoch INTERRUPTED·크래시 재시작 마킹). 기존 replay 골든 무변경 (이벤트 목록 비교 — DB 기록은 부수 효과)
 - 2026-07-23 D4 재구현 + 관측 보완 2건: pytest 314건 전건 통과 (신규 — D4 단위 34건 교체: 횡보 회전 배제·은닉 틱·1틱 이월 보정·발화 4조건·래치/진행/종결/재개시·관측 로그 2종, service 파이프라인 D4 감지 1건, config 신 스키마 수용/구 키 거부, replay 역전 픽스처 61000 벽 등록 확장 — 스트릭 누적 골든). 실전 검증은 배포 후 ([NEXT_STEPS.md](NEXT_STEPS.md) §3)
 
 ---
