@@ -149,3 +149,55 @@ class TestDiffGap:
         _, first = run("diff_gap.jsonl", tmp_path, "a.db")
         _, second = run("diff_gap.jsonl", tmp_path, "b.db")
         assert first == second
+
+
+class TestWatchScenario:
+    """W 주시 관측 replay (PRD §8 W v1.13, M7): 등록 → 접촉 → 계측 →
+    주기 리포트 → 재연결 공백(오염 봉 판정 제외) → 15m 이탈 마감 2연속 →
+    무효화 확정. 배선(epoch 게이트 밖 계측, 봉 마감 선판정, 명령 핸들러 경로,
+    final 선기록)까지 검증 범위."""
+
+    FIXTURE = "watch_invalidation.jsonl"
+
+    def test_full_watch_lifecycle_golden(self, tmp_path):
+        from order_monitor.detectors.watch_level import (
+            FINAL_SUPPORT_BROKEN,
+            WatchFinal,
+            WatchFirstContact,
+            WatchPeriodicReport,
+        )
+
+        service, emitted = run(self.FIXTURE, tmp_path)
+
+        first = [e for e in emitted if isinstance(e, WatchFirstContact)]
+        reports = [e for e in emitted if isinstance(e, WatchPeriodicReport)]
+        finals = [e for e in emitted if isinstance(e, WatchFinal)]
+        assert len(first) == 1
+        assert first[0].data.role == "support"
+        assert len(reports) == 1
+        assert reports[0].data.cum_sell == Decimal(15)  # 65600×5 + 65450×10
+        assert reports[0].data.gap_flag is False  # 공백은 리포트 이후 발생
+
+        # 무효화: 오염 봉(초기 + 공백 재개) 2개는 판정 제외, 이후 깨끗한
+        # 이탈 마감(65300 < 65600×0.99775) 2연속으로 확정
+        assert len(finals) == 1
+        assert finals[0].reason == FINAL_SUPPORT_BROKEN
+        # + 65400×3, 65300×2×2 — 확정을 트리거한 마지막 체결(다음 봉 소속)은
+        # 봉 마감 선판정 계약상 주시 종료 후라 미계측
+        assert finals[0].data.cum_sell == Decimal(22)
+        assert finals[0].data.excursion_low == Decimal(65300)
+        assert finals[0].data.gap_flag is True  # 공백 이후 리포트 없이 종결
+
+        # 관측 종료 + final 선기록 잔존 (발송 확인 전 — §9.4)
+        assert service.watch.watches() == []
+        rows = service._watch_store.load()
+        assert len(rows) == 1
+        assert rows[0].final_reason == FINAL_SUPPORT_BROKEN
+        assert "지지 이탈 확정" in rows[0].final_text
+        service._watch_store.close()
+        service._kv.close()
+
+    def test_deterministic_same_input_same_output(self, tmp_path):
+        _, first = run(self.FIXTURE, tmp_path, "a.db")
+        _, second = run(self.FIXTURE, tmp_path, "b.db")
+        assert first == second

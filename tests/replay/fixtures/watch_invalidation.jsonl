@@ -1,0 +1,16 @@
+{"t": 0.0, "control": "connect"}
+{"t": 0.1, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 1, "bids": [["65700", "5"]], "asks": [["65701", "5"]]}}
+{"t": 0.2, "stream": "btcusdt@aggTrade", "data": {"a": 1, "p": "65700", "q": "0.5", "m": true, "T": 1000}}
+{"t": 0.3, "stream": "btcusdt@depth@100ms", "data": {"U": 100, "u": 101, "E": 1000, "b": [["65500", "150"]], "a": []}}
+{"t": 0.5, "control": "watch", "arg": "65600"}
+{"t": 1.0, "stream": "btcusdt@aggTrade", "data": {"a": 2, "p": "65650", "q": "1", "m": true, "T": 2000}}
+{"t": 2.0, "stream": "btcusdt@aggTrade", "data": {"a": 3, "p": "65600", "q": "5", "m": true, "T": 3000}}
+{"t": 3.0, "stream": "btcusdt@aggTrade", "data": {"a": 4, "p": "65450", "q": "10", "m": true, "T": 10000}}
+{"t": 601.0, "control": "tick"}
+{"t": 602.0, "control": "disconnect"}
+{"t": 603.0, "control": "connect"}
+{"t": 603.5, "stream": "btcusdt@depth20@100ms", "data": {"lastUpdateId": 2, "bids": [["65420", "3"]], "asks": [["65421", "3"]]}}
+{"t": 604.0, "stream": "btcusdt@aggTrade", "data": {"a": 5, "p": "65400", "q": "3", "m": true, "T": 905000}}
+{"t": 605.0, "stream": "btcusdt@aggTrade", "data": {"a": 6, "p": "65300", "q": "2", "m": true, "T": 1805000}}
+{"t": 606.0, "stream": "btcusdt@aggTrade", "data": {"a": 7, "p": "65300", "q": "2", "m": true, "T": 2705000}}
+{"t": 607.0, "stream": "btcusdt@aggTrade", "data": {"a": 8, "p": "65300", "q": "2", "m": true, "T": 3605000}}
