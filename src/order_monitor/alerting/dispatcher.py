@@ -30,9 +30,21 @@ from order_monitor.detectors.d1 import D1Appeared, D1Attribution, D1Removed
 from order_monitor.detectors.d2 import D2BurstOnset, D2BurstSummary, D2Label, D2Verdict
 from order_monitor.detectors.d4 import D4Defense, D4DefenseKind
 from order_monitor.detectors.d5 import D5Progress, D5Terminal, D5TerminalState
+from order_monitor.detectors.watch_level import (
+    FINAL_MANUAL,
+    FINAL_RESISTANCE_BROKEN,
+    FINAL_SUPPORT_BROKEN,
+    ROLE_RESISTANCE,
+    ROLE_SUPPORT,
+    WatchFinal,
+    WatchFirstContact,
+    WatchPeriodicReport,
+    WatchReportData,
+)
 from order_monitor.ingestion.events import Side
 from order_monitor.ingestion.health import StreamStale
 from order_monitor.persistence.alerts_outbox import AlertsOutboxStore
+from order_monitor.persistence.watch_levels import WatchStore
 from order_monitor.state.wall_registry import Wall
 
 logger = logging.getLogger(__name__)
@@ -94,6 +106,15 @@ def _fmt_duration(seconds: float) -> str:
     return f"{minutes}m {secs:02d}s"
 
 
+def _fmt_span(seconds: float) -> str:
+    """수 시간 단위 경과 표기 — "1h 42m" (W 주시는 수십 시간 지속, PRD §9.3 v1.13)."""
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    if hours:
+        return f"{hours}h {rem // 60:02d}m"
+    return _fmt_duration(seconds)
+
+
 class AlertDeduper:
     """키당 쿨다운 — 마지막 발송 시각 기록 (PRD §9.2 D1/D2 전용)."""
 
@@ -141,10 +162,17 @@ class AlertDispatcher:
         self._d5_sent: set[tuple] = set()
         # D4 흡수 방어 dedup — 동일 원리의 순수 멱등 셋 (PRD §9.2 v1.11)
         self._d4_sent: set[tuple] = set()
+        # W 주시 config (밴드 폭 — 구역 내 벽 필터 하한 fallback, PRD §9.3 v1.13)
+        self._watch_cfg = config.watch
+        self._watch_store: WatchStore | None = None
 
     def set_outbox(self, outbox: AlertsOutboxStore) -> None:
         """outbox는 db_path 확정 후 `startup()`에서 열리므로 생성자 이후 별도 주입."""
         self._outbox = outbox
+
+    def set_watch_store(self, store: WatchStore) -> None:
+        """W 최종 리포트 발송 보장용 (§9.4 v1.13) — outbox와 같은 지연 주입 관례."""
+        self._watch_store = store
 
     def dispatch(self, event: object) -> bool:
         """발송 큐 투입 여부를 반환한다. 미대상 이벤트(D1Suppressed 등)는 조용히 무시."""
@@ -192,6 +220,8 @@ class AlertDispatcher:
             return self._dispatch_d5_progress(event)
         elif isinstance(event, D4Defense):
             return self._dispatch_d4(event)
+        elif isinstance(event, (WatchFirstContact, WatchPeriodicReport, WatchFinal)):
+            return self._dispatch_watch(event)
         else:
             return False
 
@@ -301,6 +331,149 @@ class AlertDispatcher:
             f"인정 이벤트 {event.event_count}건 · 스트릭 {_fmt_duration(event.streak_seconds)}\n"
             f"※ 관측 수치 통지 — 주체·의도 해석 없음 (PRD §8 D4)"
         )
+
+    # ── W 주시 리포트 (PRD §9.1–§9.4 v1.13) ─────────────────────
+
+    def _dispatch_watch(self, event: WatchFirstContact | WatchPeriodicReport | WatchFinal) -> bool:
+        """항상 발송 — 등록 자체가 발송 의사, on/off 키·dedup·쿨다운 없음 (§9.1/§9.2).
+        자체 케이던스(리포트 간격 + 활동 게이팅)가 억제 메커니즘."""
+        if isinstance(event, WatchFinal):
+            text = self._format_watch(event.data, final_reason=event.reason)
+            if self._watch_store is not None and event.reason != FINAL_MANUAL:
+                # 선기록 → 발송 확인 시 행 삭제 (§9.4 — 수동 해소는 행이 이미
+                # 삭제돼 있어 보장 불필요, 자동 무효화만 크래시 재전송 대상)
+                self._watch_store.mark_final(event.data.lo, event.data.hi, event.reason, text)
+                store = self._watch_store
+                self._sender.enqueue(
+                    text,
+                    on_sent=lambda lo=event.data.lo, hi=event.data.hi: store.delete(lo, hi),
+                )
+                return True
+            self._sender.enqueue(text)
+            return True
+        text = self._format_watch(event.data, first=isinstance(event, WatchFirstContact))
+        self._sender.enqueue(text)
+        return True
+
+    def format_watch_status(self, datas: list[WatchReportData]) -> str:
+        """`/watching` 온디맨드 현황 (§9.5) — 수신 응답 경로에서 사용."""
+        if not datas:
+            return "👁 주시 중인 레벨이 없습니다. (/watch <가격> 으로 등록)"
+        lines = ["👁 주시 현황"]
+        for data in datas:
+            role = self._watch_role_label(data.role)
+            detail = f"{role}"
+            if data.first_contact_at is not None:
+                detail += (
+                    f" {data.episode_num}회차 · "
+                    f"누적 매도 {_fmt_approx(data.cum_sell)} / 매수 {_fmt_approx(data.cum_buy)} BTC"
+                )
+            lines.append(f"- {self._watch_zone_text(data)}: {detail}")
+        return "\n".join(lines)
+
+    def _watch_zone_text(self, data: WatchReportData) -> str:
+        if data.lo == data.hi:
+            return _fmt(data.lo)
+        return f"{_fmt(data.lo)}~{_fmt(data.hi)}"
+
+    def _watch_role_label(self, role: str | None) -> str:
+        return {ROLE_SUPPORT: "지지 테스트", ROLE_RESISTANCE: "저항 테스트"}.get(role, "대기")
+
+    def _format_watch(
+        self,
+        data: WatchReportData,
+        *,
+        first: bool = False,
+        final_reason: str | None = None,
+    ) -> str:
+        if final_reason == FINAL_SUPPORT_BROKEN:
+            status = "지지 이탈 확정 — 주시 종료"
+        elif final_reason == FINAL_RESISTANCE_BROKEN:
+            status = "저항 돌파 확정 — 주시 종료"
+        elif final_reason == FINAL_MANUAL:
+            status = "주시 해소 (수동)"
+        elif first:
+            status = f"{self._watch_role_label(data.role)} 시작"
+        else:
+            status = f"{self._watch_role_label(data.role)} 중"
+
+        if data.first_contact_at is not None:
+            if first:
+                contact = f" ({data.episode_num}회차, 첫 접촉)"
+            else:
+                elapsed = _fmt_span(self._clock() - data.first_contact_at)
+                contact = f" ({data.episode_num}회차, 첫 접촉 후 {elapsed})"
+        else:
+            contact = " (접촉 없음)"
+
+        lines = [f"👁 주시 {self._watch_zone_text(data)} — {status}{contact}"]
+
+        price_line = self._watch_price_line(data)
+        if price_line is not None:
+            lines.append(price_line)
+        if final_reason is None:
+            interval_min = max(1, round(data.interval_seconds / 60))
+            lines.append(
+                f"이번 {interval_min}분: 매도 {_fmt_approx(data.interval_sell)} / "
+                f"매수 {_fmt_approx(data.interval_buy)} BTC"
+            )
+        lines.append(
+            f"누적: 매도 {_fmt_approx(data.cum_sell)} / 매수 {_fmt_approx(data.cum_buy)} BTC"
+        )
+
+        tail_parts = []
+        if final_reason is None and data.role is not None:
+            tail_parts.append(f"{data.timeframe} 이탈 마감 {data.breach_closes}/{data.confirm_closes}")
+        zone_walls = self._watch_zone_wall_line(data)
+        if zone_walls is not None:
+            tail_parts.append(zone_walls)
+        if tail_parts:
+            lines.append(" · ".join(tail_parts))
+        if data.gap_flag:
+            lines.append("※ 관측 공백 포함 (epoch/재시작)")
+        return "\n".join(lines)
+
+    def _watch_price_line(self, data: WatchReportData) -> str | None:
+        if data.last_price is None:
+            return None
+        # 거리 기준가 = 테스트받는 구역 경계 (지지: hi, 저항: lo — 폭 0이면 동일)
+        ref = data.hi if data.role == ROLE_SUPPORT else data.lo
+        dist_pct = (data.last_price - ref) / ref * 100
+        line = f"현재가 {_fmt(data.last_price)} ({dist_pct:+.2f}%)"
+        if data.role == ROLE_SUPPORT and data.excursion_low is not None:
+            low_pct = (data.excursion_low - ref) / ref * 100
+            line += f" · 저점 {_fmt(data.excursion_low)} ({low_pct:+.2f}%)"
+        elif data.role == ROLE_RESISTANCE and data.excursion_high is not None:
+            high_pct = (data.excursion_high - ref) / ref * 100
+            line += f" · 고점 {_fmt(data.excursion_high)} ({high_pct:+.2f}%)"
+        return line
+
+    def _watch_zone_wall_line(self, data: WatchReportData) -> str | None:
+        """계측 영향권(§8 W — 구역 ∪ excursion 확장) 내 레지스트리 벽, 구역
+        경계 근접순 2개 캡. 기존 `_nearby_wall_line`(전역 최근접 1개)과 달리
+        주시 구역으로 필터한다."""
+        if self._wall_lookup is None:
+            return None
+        if data.role == ROLE_SUPPORT:
+            lower = data.excursion_low if data.excursion_low is not None else data.lo
+            bounds = (min(lower, data.lo), data.hi)
+            edge = data.hi
+        elif data.role == ROLE_RESISTANCE:
+            upper = data.excursion_high if data.excursion_high is not None else data.hi
+            bounds = (data.lo, max(upper, data.hi))
+            edge = data.lo
+        else:
+            bounds = (data.lo, data.hi)
+            edge = data.lo
+        walls = [w for w in self._wall_lookup() if bounds[0] <= w.price <= bounds[1]]
+        if not walls:
+            return None
+        walls.sort(key=lambda w: abs(w.price - edge))
+        parts = [
+            f"{_fmt(w.price)} {_SIDE_LABEL[w.side]} {_fmt_approx(w.last_qty)} BTC"
+            for w in walls[:2]
+        ]
+        return "구역 내 벽: " + " · ".join(parts)
 
     def _format_d1_appeared(self, event: D1Appeared) -> str:
         return (

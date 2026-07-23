@@ -586,3 +586,183 @@ def test_enqueue_without_on_sent_still_works():
     sender.enqueue("msg")  # on_sent 생략 — D1/D2 기존 경로
     run_sender_until(sender, lambda: len(post.calls) >= 1)
     assert post.calls[0][1]["text"] == "msg"
+
+
+# ── W 주시 리포트 (PRD §9.1–§9.4 v1.13) ──────────────────────
+
+
+def watch_data(**overrides):
+    from order_monitor.detectors.watch_level import ROLE_SUPPORT, WatchReportData
+
+    base = dict(
+        lo=Decimal(65600),
+        hi=Decimal(65600),
+        literal="65600",
+        role=ROLE_SUPPORT,
+        episode_num=3,
+        in_band=True,
+        registered_at=1_000.0,
+        first_contact_at=1_000.0,
+        last_price=Decimal(65588),
+        excursion_low=Decimal(65412),
+        excursion_high=Decimal(65600),
+        interval_buy=Decimal(288),
+        interval_sell=Decimal(412),
+        cum_buy=Decimal(1870),
+        cum_sell=Decimal(3120),
+        interval_seconds=600.0,
+        breach_closes=1,
+        confirm_closes=2,
+        timeframe="15m",
+        gap_flag=False,
+    )
+    base.update(overrides)
+    return WatchReportData(**base)
+
+
+def test_watch_periodic_report_format():
+    from order_monitor.detectors.watch_level import WatchPeriodicReport
+
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(
+        make_config(), sender, monotonic=FakeClock(), clock=FakeClock(1_000.0 + 6120)
+    )
+    assert dispatcher.dispatch(WatchPeriodicReport(data=watch_data())) is True
+    text = sender.sent[0]
+    assert "👁 주시 65,600 — 지지 테스트 중 (3회차, 첫 접촉 후 1h 42m)" in text
+    assert "현재가 65,588 (-0.02%) · 저점 65,412 (-0.29%)" in text
+    assert "이번 10분: 매도 412 / 매수 288 BTC" in text
+    assert "누적: 매도 3,120 / 매수 1,870 BTC" in text
+    assert "15m 이탈 마감 1/2" in text
+    assert "관측 공백" not in text
+
+
+def test_watch_first_contact_format():
+    from order_monitor.detectors.watch_level import WatchFirstContact
+
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender, monotonic=FakeClock())
+    dispatcher.dispatch(
+        WatchFirstContact(data=watch_data(episode_num=1, interval_seconds=0.0))
+    )
+    assert "지지 테스트 시작 (1회차, 첫 접촉)" in sender.sent[0]
+
+
+def test_watch_gap_flag_line():
+    from order_monitor.detectors.watch_level import WatchPeriodicReport
+
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(
+        make_config(), sender, monotonic=FakeClock(), clock=FakeClock(2_000.0)
+    )
+    dispatcher.dispatch(WatchPeriodicReport(data=watch_data(gap_flag=True)))
+    assert "※ 관측 공백 포함 (epoch/재시작)" in sender.sent[0]
+
+
+def test_watch_range_zone_header():
+    from order_monitor.detectors.watch_level import ROLE_RESISTANCE, WatchPeriodicReport
+
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(
+        make_config(), sender, monotonic=FakeClock(), clock=FakeClock(2_000.0)
+    )
+    dispatcher.dispatch(
+        WatchPeriodicReport(
+            data=watch_data(
+                lo=Decimal(64900),
+                hi=Decimal(66000),
+                literal="64900-66000",
+                role=ROLE_RESISTANCE,
+                excursion_high=Decimal(66200),
+                excursion_low=None,
+            )
+        )
+    )
+    text = sender.sent[0]
+    assert "주시 64,900~66,000 — 저항 테스트 중" in text
+    assert "고점 66,200" in text
+
+
+def test_watch_final_guaranteed_via_store(tmp_path):
+    # §9.4 v1.13 — 선기록(final_text) → 발송 확인(on_sent) 시 행 삭제
+    from order_monitor.detectors.watch_level import FINAL_SUPPORT_BROKEN, WatchFinal
+    from order_monitor.persistence.watch_levels import WatchStore
+
+    store = WatchStore(tmp_path / "w.db")
+    store.upsert(watch_data(), flushed_at=1.0)
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(
+        make_config(), sender, monotonic=FakeClock(), clock=FakeClock(2_000.0)
+    )
+    dispatcher.set_watch_store(store)
+    dispatcher.dispatch(WatchFinal(data=watch_data(), reason=FINAL_SUPPORT_BROKEN))
+    assert "지지 이탈 확정 — 주시 종료" in sender.sent[0]
+    assert "이번" not in sender.sent[0]  # 최종 리포트엔 인터벌 줄 없음
+    row = store.load()[0]
+    assert row.final_text == sender.sent[0]  # 발송 확인 전 — 선기록 유지
+    sender.on_sent_callbacks[0]()  # 발송 확인
+    assert store.count() == 0
+    store.close()
+
+
+def test_watch_final_manual_skips_store(tmp_path):
+    from order_monitor.detectors.watch_level import FINAL_MANUAL, WatchFinal
+    from order_monitor.persistence.watch_levels import WatchStore
+
+    store = WatchStore(tmp_path / "w.db")
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(
+        make_config(), sender, monotonic=FakeClock(), clock=FakeClock(2_000.0)
+    )
+    dispatcher.set_watch_store(store)
+    dispatcher.dispatch(WatchFinal(data=watch_data(), reason=FINAL_MANUAL))
+    assert "주시 해소 (수동)" in sender.sent[0]
+    assert sender.on_sent_callbacks[0] is None  # 보장 경로 미사용
+    store.close()
+
+
+def test_watch_zone_wall_filter():
+    # 계측 영향권(구역 ∪ excursion) 내 벽만, 구역 경계 근접순 2개 캡
+    from order_monitor.detectors.watch_level import WatchPeriodicReport
+    from order_monitor.state.wall_registry import Wall
+
+    def wall(price, side, last):
+        return Wall(
+            price=Decimal(price),
+            side=side,
+            last_qty=Decimal(last),
+            peak_qty=Decimal(last),
+            first_seen_at=0.0,
+            first_seen_above_threshold=None,
+            last_seen_at=0.0,
+        )
+
+    walls = [
+        wall("65500", Side.BUY, "240"),  # excursion_low(65412)~hi(65600) 내
+        wall("65450", Side.BUY, "120"),  # 내부 — 경계에서 더 멂
+        wall("65420", Side.BUY, "90"),  # 내부 — 3번째, 캡에 걸려 제외
+        wall("66000", Side.SELL, "150"),  # 영향권 밖
+    ]
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(
+        make_config(),
+        sender,
+        monotonic=FakeClock(),
+        clock=FakeClock(2_000.0),
+        wall_lookup=lambda: walls,
+    )
+    dispatcher.dispatch(WatchPeriodicReport(data=watch_data()))
+    text = sender.sent[0]
+    assert "구역 내 벽: 65,500 bid 240 BTC · 65,450 bid 120 BTC" in text
+    assert "66,000" not in text
+
+
+def test_watch_status_format():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender, monotonic=FakeClock())
+    assert "주시 중인 레벨이 없습니다" in dispatcher.format_watch_status([])
+    text = dispatcher.format_watch_status(
+        [watch_data(), watch_data(lo=Decimal(64900), hi=Decimal(66000), role=None, first_contact_at=None)]
+    )
+    assert "- 65,600: 지지 테스트 3회차 · 누적 매도 3,120 / 매수 1,870 BTC" in text
+    assert "- 64,900~66,000: 대기" in text
