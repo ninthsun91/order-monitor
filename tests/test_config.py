@@ -175,6 +175,80 @@ def test_d2_v13_keys_loaded():
     assert config.alerts.send_d2_summary is True
 
 
+def test_watch_keys_loaded():
+    # PRD §10 v1.13 — W 주시 관측기 섹션
+    config = load_config(EXAMPLE_CONFIG)
+    assert config.watch.contact_band_pct == 0.001
+    assert config.watch.confirm_timeframe == "15m"
+    assert config.watch.confirm_closes == 2
+    assert config.watch.invalidate_buffer_pct == 0.0025
+    assert config.watch.report_interval_seconds == 600.0
+
+
+def test_watch_missing_key_raises(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace("confirm_closes: 2", "")
+    )
+
+    with pytest.raises(ConfigError, match="watch' is missing required keys: confirm_closes"):
+        load_config(bad_config)
+
+
+def test_watch_unknown_key_raises(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace(
+            "  confirm_closes: 2", "  confirm_closes: 2\n  bogus_watch_key: 1"
+        )
+    )
+
+    with pytest.raises(ConfigError, match="watch' has unknown keys: bogus_watch_key"):
+        load_config(bad_config)
+
+
+def test_watch_timeframe_enum_raises(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace('confirm_timeframe: "15m"', 'confirm_timeframe: "5m"')
+    )
+
+    with pytest.raises(ConfigError, match="confirm_timeframe' must be '15m' or '1h'"):
+        load_config(bad_config)
+
+
+def test_watch_closes_zero_raises(tmp_path):
+    # 공통 "> 0" 불변조건이 커버 — 0이면 즉시 무효화라 의미 조건 위반
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace("confirm_closes: 2", "confirm_closes: 0")
+    )
+
+    with pytest.raises(ConfigError, match="watch.confirm_closes' must be positive"):
+        load_config(bad_config)
+
+
+def test_watch_closes_float_raises(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace("confirm_closes: 2", "confirm_closes: 1.5")
+    )
+
+    with pytest.raises(ConfigError, match="watch.confirm_closes' must be an int"):
+        load_config(bad_config)
+
+
+def test_watch_report_interval_floor_raises(tmp_path):
+    # Telegram 초당 상한·스팸 하한 (PRD §10 v1.13)
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace("report_interval_seconds: 600", "report_interval_seconds: 30")
+    )
+
+    with pytest.raises(ConfigError, match="report_interval_seconds' must be >= 60"):
+        load_config(bad_config)
+
+
 def test_delta_label_boundary_order_raises(tmp_path):
     bad_config = tmp_path / "config.yaml"
     bad_config.write_text(

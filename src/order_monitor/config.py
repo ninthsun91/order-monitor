@@ -69,17 +69,27 @@ class WallTrackerConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class WatchConfig:
+    contact_band_pct: float
+    confirm_timeframe: str
+    confirm_closes: int
+    invalidate_buffer_pct: float
+    report_interval_seconds: float
+
+
+@dataclasses.dataclass(frozen=True)
 class AppConfig:
     symbol: str
     thresholds: ThresholdsConfig
     alerts: AlertsConfig
     wall_tracker: WallTrackerConfig
+    watch: WatchConfig
     telegram: TelegramConfig
     watchdog: WatchdogConfig
 
 
 _TOP_LEVEL_STR_FIELDS = ("symbol",)
-_TOP_LEVEL_SECTION_FIELDS = ("thresholds", "alerts", "wall_tracker", "telegram", "watchdog")
+_TOP_LEVEL_SECTION_FIELDS = ("thresholds", "alerts", "wall_tracker", "watch", "telegram", "watchdog")
 
 
 def _check_value_type(section: str, name: str, value: object, expected_type: type) -> object:
@@ -140,6 +150,7 @@ def _validate_invariants(config: AppConfig) -> None:
         ("thresholds", config.thresholds),
         ("alerts", config.alerts),
         ("wall_tracker", config.wall_tracker),
+        ("watch", config.watch),
         ("watchdog", config.watchdog),
     )
     for section_name, section in sections:
@@ -182,6 +193,20 @@ def _validate_invariants(config: AppConfig) -> None:
             "'watchdog.heartbeat_interval' must be less than 'watchdog.stale_seconds'"
         )
 
+    # W 주시 관측기 (PRD §10 v1.13)
+    if config.watch.confirm_timeframe not in ("15m", "1h"):
+        raise ConfigError(
+            f"'watch.confirm_timeframe' must be '15m' or '1h', got {config.watch.confirm_timeframe!r}"
+        )
+    for name in ("contact_band_pct", "invalidate_buffer_pct"):
+        value = getattr(config.watch, name)
+        if not 0 < value <= 1:
+            raise ConfigError(f"'watch.{name}' must be in (0, 1], got {value}")
+    if config.watch.report_interval_seconds < 60:
+        raise ConfigError(
+            f"'watch.report_interval_seconds' must be >= 60, got {config.watch.report_interval_seconds}"
+        )
+
 
 def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path)
@@ -212,6 +237,7 @@ def load_config(path: str | Path) -> AppConfig:
         thresholds=_build_section(ThresholdsConfig, raw["thresholds"], "thresholds"),
         alerts=_build_section(AlertsConfig, raw["alerts"], "alerts"),
         wall_tracker=_build_section(WallTrackerConfig, raw["wall_tracker"], "wall_tracker"),
+        watch=_build_section(WatchConfig, raw["watch"], "watch"),
         telegram=_build_section(TelegramConfig, raw["telegram"], "telegram"),
         watchdog=_build_section(WatchdogConfig, raw["watchdog"], "watchdog"),
     )

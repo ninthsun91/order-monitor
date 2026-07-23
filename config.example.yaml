@@ -40,6 +40,13 @@ wall_tracker:                    # PRD v1.1 — diff 탭 벽 레지스트리
   record_min_qty_btc: 100        # 레지스트리 "기록" 하한 (알림 아님 — 관측·튜닝 데이터용, 알림은 size_threshold_btc)
   ttl_days: 7                    # unconfirmed 마킹 후 이 기간 재확인 이벤트 없으면 삭제 (PRD §12.1 v1.2 — 확인된 벽은 무기한 유지)
 
+watch:                           # PRD v1.13 — W 주시 레벨 관측기 (§8 W). 주시 "목록"은 config가 아니라 런타임 명령(§9.5) + SQLite(§12.2)
+  contact_band_pct: 0.001        # 접촉 밴드 폭 (±0.1%) — 회차 경계·리포트 게이팅 전용, 계측 캡 아님
+  confirm_timeframe: "15m"       # 무효화 봉 ("15m" | "1h")
+  confirm_closes: 2              # 이탈 마감 연속 횟수 (사용자 확정 2026-07-23 — 15m×2)
+  invalidate_buffer_pct: 0.0025  # 무효화 마감가 버퍼 (0.25%)
+  report_interval_seconds: 600   # 주기 리포트 간격 (5~15분 권장 대역)
+
 telegram:
   chat_id: "..."                 # 토큰은 TELEGRAM_BOT_TOKEN env로
 
