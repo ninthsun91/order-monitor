@@ -131,5 +131,5 @@ journalctl -u order-monitor-watchdog -e                          # 판정 로그
 - 조용한 실패 0건 — 로그에서 단절/재시작 이벤트마다 대응 통지(FEED_STALE·재연결·PROCESS_DOWN)가 있는지 대조
 - Binance 24h 강제 단절이 매일 발생 → 자동 재연결 + epoch 재시작 로그 확인
 - 하트비트 오탐 0건 — 정상 운영 중 PROCESS_DOWN이 발화했다면 임계(60s) 재검토
-- `D1Suppressed` 실전 사례 발생 시 DEVELOPMENT_PLAN M2 검증 기록에 추기 (이월 항목)
+- `D1Suppressed` 실전 사례 발생 시 docs/MILESTONE_ARCHIVE.md M2 검증 기록에 추기 (이월 항목)
 - D5 케이스 1 실전 알림 발생 시 M4 검증 기록에 추기 (이월 항목)

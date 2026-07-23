@@ -55,7 +55,7 @@ class WallRemoval:
 @dataclasses.dataclass(frozen=True)
 class DiffResult:
     """apply_diff 1회분의 등록/소멸 — 등록은 궤적 로깅·D4 스트릭 개시의 소비 대상
-    (DEVELOPMENT_PLAN M6 관측 보완, PRD §8 D4 v1.12 스트릭)."""
+    (docs/DEVELOPMENT_PLAN.md M6 관측 보완, PRD §8 D4 v1.12 스트릭)."""
 
     registrations: list[Wall]
     removals: list[WallRemoval]

@@ -1,10 +1,10 @@
 # NEXT_STEPS — 남은 작업 가이드
 
-작성: 2026-07-22, 갱신: 2026-07-23 (D4 재구현·관측 보완 2건 완료 + PRD v1.13 W 주시 관측기 스펙 확정 세션). **이 문서는 스냅샷이다** — 진행 상태의 진실원은 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)(체크박스·결정 기록)이고, 요구사항의 진실원은 [PRD_orderbook_intent_monitor.md](PRD_orderbook_intent_monitor.md)다. 작업 착수 전 반드시 두 문서의 해당 절을 먼저 읽을 것. 항목을 완료하면 DEVELOPMENT_PLAN 체크박스를 갱신하고 이 문서의 해당 절을 삭제/갱신한다.
+작성: 2026-07-22, 갱신: 2026-07-23 (D4 재구현·관측 보완 2건 완료 + PRD v1.13 W 주시 관측기 스펙 확정 세션). **이 문서는 스냅샷이다** — 진행 상태의 진실원은 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)(체크박스), 결정의 진실원은 [DECISIONS.md](DECISIONS.md), 요구사항의 진실원은 [PRD_orderbook_intent_monitor.md](PRD_orderbook_intent_monitor.md)다. 작업 착수 전 반드시 두 문서의 해당 절을 먼저 읽을 것. 항목을 완료하면 DEVELOPMENT_PLAN 체크박스를 갱신하고 이 문서의 해당 절을 삭제/갱신한다.
 
 작업 규칙 (CLAUDE.md): 스펙 변경은 **문서(PRD·결정 기록) 갱신 → 사용자 확인 → 코드** 순서. 커밋은 의미 단위마다, push는 명시 요청 시에만.
 
-(2026-07-23 완료되어 삭제된 절: D4 재구현 — PRD §8 D4 v1.12 기준 구현 완료, 관측 보완 2건 — 등록/소멸 궤적 로깅 + D2 요약 근접 벽 컨텍스트. DEVELOPMENT_PLAN M6 체크박스·검증 기록·결정 기록 2026-07-23 참고. §0 "VPS 배포 대기" 절은 배포가 수시 진행되는 일상 운영이 되어 상시 트래킹에서 제외 — 배포 시 config.yaml 대조 기준은 [config.example.yaml](config.example.yaml), 엄격 스키마라 키 불일치 시 기동 실패.)
+(2026-07-23 완료되어 삭제된 절: D4 재구현 — PRD §8 D4 v1.12 기준 구현 완료, 관측 보완 2건 — 등록/소멸 궤적 로깅 + D2 요약 근접 벽 컨텍스트. DEVELOPMENT_PLAN M6 체크박스·검증 기록·결정 기록 2026-07-23 참고. §0 "VPS 배포 대기" 절은 배포가 수시 진행되는 일상 운영이 되어 상시 트래킹에서 제외 — 배포 시 config.yaml 대조 기준은 [config.example.yaml](../config.example.yaml), 엄격 스키마라 키 불일치 시 기동 실패.)
 
 ---
 

@@ -1,0 +1,234 @@
+# 마일스톤 아카이브 (M0–M5, 완료) — BTC 오더북 인텐트→실체결 모니터
+
+> [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)에서 분리한 완료 마일스톤의 상세 기록(체크박스·구현 노트·검증 기록) — 과거 구현 경위 조사 시에만 읽는다. 내용은 분리 시점(2026-07-23) 원문 그대로이며 동결 상태다. 이월 관찰 항목(M5 행 훈련, M2 D1Suppressed 실전 사례)만 살아 있고, 발생 시 해당 검증 기록에 추기한다.
+
+## M0 — 프로젝트 스캐폴딩
+
+PRD에는 없지만 M1 착수 전 필요한 기반 작업.
+
+- [x] Python 3.12 설치 및 가상환경 생성 (Homebrew `python@3.12`, `.venv`)
+- [x] `pyproject.toml` 작성 (기본 메타데이터, `requires-python = ">=3.12"`, `pyyaml`, dev: `pytest`)
+- [x] 의존성 선택: `ccxt`를 1차로 채택, 한계 발견 시 `binance-connector-python`으로 보완/전환 (PRD §5.2) → 결정 기록 참고
+- [x] 디렉터리 구조 확정 (src 레이아웃, PRD §6 컴포넌트에 1:1 대응 — 아래 참고)
+- [x] `config.yaml` 로더 + 스키마 검증 (PRD §10의 모든 키) — `src/order_monitor/config.py`, 예시 `config.example.yaml`, 테스트 `tests/test_config.py` (6 passed)
+- [x] 구조화 로그(JSON lines) 기반 셋업 (PRD §11.4) — `src/order_monitor/logging_setup.py` (stdlib `RotatingFileHandler`로 로테이션까지 포함, 외부 로그 라이브러리 불필요), 테스트 `tests/test_logging_setup.py` (8 passed 누적)
+- [x] git 저장소 초기화, `.gitignore` (`.venv/`, `*.log`, `*.db`/`*.sqlite3`, `config.yaml`, `.env`, `.claude/settings.local.json` 등 제외). 초기 커밋 `3a8d8e2` 후 원격 `origin`(github.com/ninthsun91/order-monitor)에 푸시 완료
+
+**완료 기준**: `config.yaml`을 읽어 로그 한 줄 남기고 종료하는 엔트리포인트가 동작한다.
+→ **달성**. `src/order_monitor/main.py` + `[project.scripts] order-monitor` 등록. `config.example.yaml`을 로컬 `config.yaml`로 복사해 `order-monitor` CLI 실행 시 JSON 로그 한 줄(`config loaded`) 출력 및 로그 파일 기록 확인 (파일 1줄 + stderr 콘솔 출력은 별개 핸들러, 중복 아님). 테스트 9개 전체 통과.
+
+**M0 완료.**
+
+**디렉터리 구조** (PRD §6 아키텍처 다이어그램의 컴포넌트에 대응):
+
+```
+src/order_monitor/
+  ingestion/      # WS 클라이언트, 재연결·keepalive
+  state/          # order_book, level_tracker, trade_window
+  detectors/      # D1~D5
+  alerting/       # Telegram 발송, dedup·쿨다운
+  watchdog/       # 인프로세스 워치독, 하트비트
+  persistence/    # SQLite (§12)
+tests/
+```
+
+`src/order_monitor/` 최상위에 `config.py`(로더), `logging_setup.py`(JSON 로그), `main.py`(엔트리포인트)가 추가되어 있다.
+
+### M0 후속 세션 참고 노트
+
+DEVELOPMENT_PLAN 본문에는 드러나지 않지만 이후 작업 시 알아두면 좋은 사실들:
+
+- **의존성 실측 상태**: `ccxt 4.5.64` 설치됨, `import ccxt.pro` 정상(asyncio WebSocket), `aiohttp 3.14.1` 동반 설치됨. → M1 ccxt 스파이크 바로 착수 가능.
+- **`config.chat_id`는 문자열만 허용 (M2 주의)**: 현재 스키마는 `telegram.chat_id`를 `str`로 강제. 그런데 Telegram 그룹/채널 chat_id는 흔히 음의 정수(예: `-1001234567890`)라, YAML에 정수로 쓰면 `ConfigError`로 거부됨. `config.example.yaml`이 `"..."`(문자열)이라 이 함정이 가려져 있음. M2에서 Telegram 배선할 때 int→str 허용/강제 변환을 결정할 것.
+- **로컬 `config.yaml`은 gitignore됨**: 레포에는 `config.example.yaml`만 있음. 새 환경/세션에서는 이를 복사해 `config.yaml`을 만들어야 CLI가 동작함.
+- **로깅 이중 출력**: `setup_logging(also_stdout=True)`가 기본. 파일(`RotatingFileHandler`) + 콘솔(stderr) 양쪽에 찍힘. systemd 배포(M5) 시 저널 중복을 피하려면 `also_stdout` 조정 고려.
+- **`_RESERVED_ATTRS` 방식 검증됨**: `JsonFormatter`가 LogRecord 인스턴스에서 예약 속성 집합을 동적으로 구성하므로, Python 3.12가 추가한 `taskName` 속성도 자동으로 걸러짐(로그에 누출 안 됨). `extra=`로 넘긴 커스텀 필드만 JSON에 병합됨.
+
+## M0.5 — PRD v1.1(벽 레지스트리) 반영: 기존 스캐폴딩 정합화
+
+PRD v1.1 개정(diff 탭 벽 레지스트리 도입, 2026-07-11 결정 기록 참고)으로 M0 산출물 중 설정 스키마가 구스펙 상태가 됨. M1 착수 전 정합화.
+
+- [x] `config.py`: `WallTrackerConfig` 섹션 추가 (`record_min_qty_btc`, `ttl_days`) — 기존 `_build_section` 수동 검증 패턴 유지 (이 로더는 기본값 없이 전 키 필수 — 기본값 100/14는 `config.example.yaml`에 반영. ttl은 이후 PRD v1.2에서 7일로 단축됨)
+- [x] `config.example.yaml`: `thresholds.size_threshold_btc` 300 → **1000** (PRD v1.1 확정값, 오픈 퀘스천 #1 결론)
+- [x] `config.example.yaml`: `wall_tracker` 섹션 추가 (PRD §10 개정본과 일치)
+- [x] `tests/test_config.py`: 새 섹션 로드/누락 키/미지 키/타입 검증 테스트 4건 추가 (누적 12 passed)
+- [x] CLAUDE.md 갱신: 3-스트림 파이프라인, ccxt 탈락 반영, "diff 탭 ≠ full book" 가드레일, 벽 레지스트리 영속화 예외 서술
+- [x] **(v1.2 추가)** config 불변조건 검증: 양수·비율 (0,1]·`record_min < size_threshold`·`heartbeat < stale_seconds`, 위반 테스트 4건 (PRD §10 v1.2 — 16 passed)
+- [x] **(v1.2 검수 4회차)** config 최상위 키 `exchange`·`depth_stream` 삭제 — 설계 고정 사항(§5.1)의 추측성 파라미터화 제거, `symbol`만 유지 (PRD §10 개정 (15), config.py·config.example.yaml·테스트 동반 수정)
+
+**완료 기준**: 새 스키마로 `config.example.yaml` 로드 성공 + 전체 테스트 통과. → **달성** (12 passed, `WallTrackerConfig(record_min_qty_btc=100.0, ttl_days=14.0)` 로드 확인).
+
+**M0.5 완료.**
+
+## M1 — Ingestion + 상태 모델 + 로그
+
+- [x] **스파이크(우선 작업)**: ccxt `watch_order_book`이 `btcusdt@depth20@100ms`(partial snapshot)를 diff 스트림이 아니라 정확히 그 스트림으로 구독하는지 검증. 실패 시 `binance-connector-python`으로 전환(콜백→asyncio 브릿지 직접 구현) 후 이어서 진행 → **실패 확정 (2026-07-11)**: ccxt는 `btcusdt@depth@100ms`(diff)로 SUBSCRIBE 프레임을 고정 생성하고 REST 스냅샷+델타 병합으로 로컬 full book을 유지함(실측: 전송 프레임 캡처 + 수신 `depthUpdate` 이벤트 확인, 소스에도 `todo add support for <levels>-snapshots` 주석 존재. `limit=20`은 반환 시 잘라주는 용도일 뿐). fallback인 `binance-connector-python 3.13.0`의 `partial_book_depth(symbol, level=20, speed=100)`은 정확히 목표 스트림 구독 실측 확인(3초간 29msg, 20레벨 스냅샷, 간격 중앙값 100ms) → 결정 기록 참고
+- [x] 정규화 **(v1.2)**: 가격·수량은 수신 문자열 → `Decimal` 파싱, 레벨 키는 정규화 Decimal — 판정 경로 float 금지 (PRD §7 수치 표현형) — `ingestion/events.py` (파싱 실패는 `NormalizationError` 명시 감지, Decimal 키 조인은 값 기반 해시로 성립. config 수치의 Decimal 변환은 service 경계에서 수행 — 로더 스키마는 float 유지)
+- [x] WS 클라이언트: `btcusdt@depth20@100ms` 구독 → `order_book` 상태 갱신 (통째 교체) — `state/order_book.py` + `service.py` 배선
+- [x] WS 클라이언트: `btcusdt@aggTrade` 구독 → `trade_window` deque 적재 + 만료 pop — `state/trade_window.py` (만료는 exchange_time 기준, §11.1 단일 스트림 시간창)
+- [x] **(v1.1)** WS 클라이언트: `btcusdt@depth@100ms`(diff) 구독 → **벽 레지스트리 이벤트 탭** (PRD §5.1 설계 결정 2). full book 미유지 — 신규 가격은 `wall_tracker.record_min_qty_btc`(100) 이상일 때만 등록, **추적 중인 가격은 잔량 값 불문 모든 이벤트 처리 (v1.2 유령 벽 방지 — PRD §8 D1 소멸 규칙)**: 잔량 0 = tombstone 소멸, 하한 미만 하락 시 D1 소멸 판정 후 활성 제거. D1 발화 게이트는 `size_threshold_btc`(1000) — 2단 임계치 (PRD §8 D1) — `state/wall_registry.py` (소멸은 `WallRemoval` 레코드 반환, FILLED/PULLED 판정 소비는 M2)
+- [x] **(v1.1)** `wall_registry` SQLite 영속화 선행 구현 (PRD §12.1 — `walls` 테이블 한정, 전체 영속화는 여전히 M6): 재시작 복원, 청취 공백 시 전체 `unconfirmed` 마킹(`unconfirmed_since` 기록) + 가격별 첫 이벤트로 해제, `first_seen_above_threshold`(스푸핑 타이머 기준)·`first_seen_at`(관측용) 보존 (PRD §12.1 v1.2 정정 반영), `ttl_days` 청소는 **unconfirmed 전용** (`unconfirmed_since` 기준 7일, 확인된 벽은 무기한 — PRD §12.1 v1.2) — `persistence/walls.py` (Decimal TEXT 저장, 가격 키 정규화 문자열)
+- [x] `level_tracker` 구현: top-20 크기 + 체결 귀속 `{price, side, current_size, cum_traded_at_level}` (PRD §7 v1.2 축소 — 생애주기 필드는 wall_registry로 일원화) — `state/level_tracker.py` (귀속 집계 규칙의 본격 검증은 M3)
+- [x] 재연결: 지수 백오프(1s→60s), 24h 강제 단절·ping/pong은 라이브러리 위임 또는 자체 구현으로 흡수 확인 (PRD §5.3 — §5.2 클라이언트 택일에 따름) — `ingestion/ws_client.py` (raw aiohttp 확정 — 결정 기록 참고. pong은 aiohttp autoping, 안정 연결 60s+ 후 백오프 리셋)
+- [x] **(v1.2)** 스트림별 헬스 추적(최종 수신 시각) + 세션 epoch: 하나라도 단절·스테일·diff U/u 갭이면 전 디텍터 판정 보류(상태 적재는 계속), 세 스트림 구독 확인 + 첫 depth 스냅샷 후 새 epoch (PRD §5.4) — `ingestion/health.py` (M1은 상태 산출·통지까지, 판정 보류 소비는 M2+. depth는 매 메시지가 완전 스냅샷이므로 "depth 수신 재개 = 첫 스냅샷" 충족)
+- [x] **(v1.2)** diff `U`/`u` 연속성 검사 — 누락 탐지 전용(재구성 금지 유지), 갭 시 청취 공백 취급(레지스트리 전체 unconfirmed) (PRD §5.1) — `DiffListeningGap` 통지를 epoch 종료와 분리 (diff 외 스트림만의 공백은 레지스트리 마킹 없음, §12.1)
+- [x] 이벤트 타임스탬프 **(v1.2 결정 — PRD §11.1)**: 전 이벤트에 `local_monotonic_receive_time` 스탬프, 있으면 `exchange_time`(aggTrade `T`, diff `E` — depth20에는 부재, 스파이크 실측) 병기 저장. 크로스 스트림 비교(D4 refill 근접성 등)·지속시간 타이머·staleness = monotonic, 단일 스트림 시간창(D2)·표기 = exchange
+- [x] 연결 이벤트(연결/단절/재연결) 구조화 로그 — ws_client(connected/disconnected/reconnect wait) + service(epoch/stale/gap/wall removed)
+- [x] 메모리 바운드 확인: `trade_window` 시간 상한 동작 테스트 — `tests/test_state.py` (1000초분 적재 후 창 크기 상한 확인)
+
+**완료 기준 (PRD)**: 24h 무중단 수집, 재연결 자동 복구 확인.
+**검증 방법**: 24h 실행 로그에서 (1) depth 이벤트 공백 구간 없음 (2) 강제 단절 시점에 재연결 로그 존재 (3) 메모리 사용량 평탄 — 를 확인하고 결과를 아래 검증 기록에 남긴다.
+
+검증 기록:
+- 2026-07-11 25s 스모크 런 (구현 완료 직후): 연결 → epoch 1 시작 → 벽 1건 포착(40000 bid 259 BTC, walls DB 기록) → SIGINT 종료 시 disconnect 마킹(unconfirmed=1) DB 미러 확인. 92 tests passed
+- **2026-07-12 검증 런 통과** (프로토콜: 8h+수동 단절 — 결정 기록 참고. 실제 11h 15m, 07-11 23:33 ~ 07-12 10:49):
+  - **공백 없음**: 수동 단절 구간 외 staleness/epoch 경고 0건 (depth·diff 30s+, aggTrade 60s+ 공백 전무)
+  - **재연결 복구**: 09:45 네트워크 ~6분 차단 → 09:46:03 depth·diff stale(31s)로 epoch 종료 + 벽 22개 unconfirmed 마킹 → 09:46:33 aggTrade stale(61s, 별도 임계 실증) → 09:52:09 복귀 이벤트로 epoch 2 → 09:52:10 서버 CLOSE 도착, disconnect 재마킹, 백오프 1.0s → 09:52:11 재연결·epoch 3, 이후 무결점. 종료 SIGINT 시 disconnect 마킹 정상
+  - **메모리 평탄**: RSS 45.9MB → 2h 워밍업 후 48.7~49.8MB 밴드 9시간 플랫 (5분 간격 135샘플)
+  - 부수: 벽 레지스트리 22개 수렴(61k bid 1,364 BTC — 스파이크 관측값과 일치). 65000 ask가 record_min(100) 경계에서 3회 등록/소멸 반복 — 하한 플래핑 사례, M6 튜닝 참고
+  - **발견 사항**: 단절 6분간 재연결 시도 0회 — 클라이언트가 half-open TCP의 `receive()`에 블록, 복구는 서버 CLOSE 도착 덕분. CLOSE가 영영 안 오는 시나리오(NAT 타임아웃 등)면 무한 대기 = 조용한 실패. 후속 조치는 아래 M1 구현 노트 참고
+
+### M1 구현 노트 (2026-07-11)
+
+- **모듈 배치**: 파이프라인 코디네이터는 `src/order_monitor/service.py`(신규, 최상위) — 디렉터리 구조의 컴포넌트 패키지들은 순수 로직만 갖고, 배선·주기 작업(staleness 1s 점검, unconfirmed TTL 청소 1h)은 service가 소유. `main.py`는 argparse+기동만
+- **DB 경로는 CLI 인자** `--db-file`(기본 `order_monitor.db`): PRD §10 config에 영속화 키가 없음(스키마 엄격 검증 유지) → `--log-file`과 같은 관례
+- **pyproject 의존성 정리**: ccxt 제거(탈락 확정), `aiohttp>=3.9` 직접 의존성 승격, dev에 `pytest-asyncio` 추가
+- **epoch 재시작 타이밍**: 라이브 연결 중 diff U/u 갭은 같은 이벤트 처리 내에서 즉시 새 epoch 시작 가능(세 스트림 모두 healthy + 직전 depth 스냅샷이 유효하므로). M2 디텍터는 EpochEnded에서 누적 리셋만 정확히 하면 됨
+- **wall_registry 시각 = wall-clock** (결정 기록 참고): D1(M2)의 `PERSIST_SECONDS` 판정은 이 필드(`first_seen_above_threshold`)와 비교하므로 wall-clock 기준으로 구현할 것
+- **(검증 런 발견 → 해결됨 2026-07-12)** half-open TCP 무한 대기: staleness는 epoch만 종료하고 연결을 끊지 않으며, 클라이언트 자체 ping이 없어(`aiohttp` autoping은 서버 ping 응답 전용) 서버 CLOSE가 안 오면 `receive()` 무한 블록이었음 → `ws_connect(heartbeat=20)` 적용(사용자 승인): pong 미수신 시 receive()가 실패해 기존 재연결 루프 작동. M5 워치독의 staleness 감시와 상호 보완(이중 방어)
+
+## M2 — D1 + D2 + Telegram 발송
+
+- [x] D1 APPEARED: `SIZE_THRESHOLD` + `PERSIST_SECONDS` 지속 필터 + 레벨당 1회 발화 + `unconfirmed` 레벨 발화 억제 (PRD §8 D1, §12.1 규칙 2) — `detectors/d1.py` (지속 타이머는 `first_seen_above_threshold` 기준 wall-clock — M1 결정 기록에 예고된 대로. 발화 게이트는 diff 이벤트 + 1s 주기 틱 양쪽)
+- [x] D1 REMOVED: `EXIT_RATIO` 하락 시 `FILLED` / `PULLED` 판정 (`FILL_ATTRIBUTION`) — 레지스트리 소멸(tombstone/하한 미만) 경로 포함. 지속 필터 미달 후보는 `D1Suppressed` 로그 전용 이벤트로 기록 (검증 방법 (2)의 근거 데이터)
+- [x] D2 볼륨 버스트 **(v1.3 전면 개편 — PRD §8 D2)**: 에피소드형 상대 임계 — `THR = max(vol_floor 30, vol_multiplier 10 × 24h 분당 기준선)`, 총 볼륨 트리거 + 델타비 성격 라벨(방향성/혼합/양방향), 온셋→히스테리시스 잠정 종료→10분 병합→요약의 2단 이벤트 — `detectors/d2.py`, `state/volume_baseline.py`, `ingestion/baseline_bootstrap.py`(REST 워밍업, 실패 비치명). 구판(고정 100 BTC 방향 분리 + BURST_COOLDOWN)은 폐기
+- [x] Telegram 발송기: 비동기 큐, 초당 상한, 실패 시 백오프 재시도 (PRD §9.2, §11.1) — `alerting/telegram.py` (초당 1건·재시도 5회 후 드롭은 코드 상수 — §10 config 키 전수 고정. 로그에서 토큰 redact)
+- [x] 토큰은 `TELEGRAM_BOT_TOKEN` 환경변수로만 주입 — main에서 필수 검증, 없으면 기동 거부 (알림 없는 조용한 실행 방지)
+- [x] dedup **(v1.3 — D1 전용으로 재분리)**: `(detector, side, price_bucket)` 키 + `ALERT_COOLDOWN`. D2는 시간 쿨다운 미적용 — 에피소드+병합이 억제 (PRD §9.2 v1.3. D5는 intent 기반 별도, M4)
+- [x] 알림 on/off 설정 반영 (`send_d1` 기본 off, `send_d2`·`send_d2_summary` 기본 on — 온셋/요약 독립)
+- [x] 단위 테스트: 지속시간 필터(스푸핑 배제), FILLED/PULLED 분기, dedup/쿨다운, D2 에피소드(온셋/종료/병합/라벨/워밍업 보류/epoch 폐기), 기준선/부트스트랩 — `tests/test_d1.py` `test_d2.py` `test_alerting.py` `test_baseline_bootstrap.py` 등 (누적 150 passed)
+
+**완료 기준 (PRD)**: 실제 알림 수신, 스푸핑 필터 동작 확인.
+**검증 방법**: (1) 실계정으로 D2 알림 1건 이상 수신 (2) 로그에서 PERSIST 미달로 발화 억제된 레벨 사례 확인.
+
+검증 기록:
+- 2026-07-12 25s 스모크 런 (구현 완료 직후, 더미 토큰): 연결 → epoch 1 시작 → 벽 1건 기록, 에러/경고 0건. 실토큰 D2 알림 수신 + `D1Suppressed` 사례 확인은 **미실시** — 완료 기준 검증 런 필요 (실계정 `TELEGRAM_BOT_TOKEN` + `telegram.chat_id` 설정 후 실행)
+- **2026-07-12 D2 v1.3 백테스트 검증**: 실 `D2Detector`에 6/29~7/12 1분봉 18,926개 재생(`scripts/backtest_d2.py`) — 사용자 지정 스파이크/흡수 9개 구간 **전부 포착**, 7.3 에피소드/일 (구판 고정 임계는 ~17회/일). 대표: 7/6 22:30 KST 2,349 BTC `directional_buy`(사용자 "강한 델타" 평가와 라벨 일치), 7/12 09:42 지속형 1,187 BTC 단일 에피소드로 병합
+- 2026-07-12 D2 v1.3 30s 라이브 스모크 런 (더미 토큰): REST 부트스트랩 1440봉 → `per_minute_mean` 8.43 BTC (임계 ≈ 84 BTC, 분석치와 일치) → epoch 1 시작, 에러/경고 0건
+- **2026-07-12 실토큰 검증 런 (13:23~21:16 KST, 재시작 1회 포함 약 8h — `order_monitor_m2_verify.log`)**:
+  - **완료 기준 (1) 충족 — D2 알림 실수신**: 에피소드 3건 전부 온셋+요약이 Telegram 실수신 확인 (스크린샷 + 로그 `telegram alert sent` 7건, 전부 attempt 1 성공, 실패/재시도 0건)
+  - **상대 임계 추종 실증**: 기준선이 저녁 유동성 증가를 따라 8.55 → 9.80 → 10.63 BTC/분으로 이동, 온셋 임계도 85.5 → 98.0 → 106.3 BTC로 자동 상향
+  - **성격 라벨 3종 실발화**: balanced(0.04) / directional_sell(0.60) / 온셋 directional_buy(0.55)→요약 mixed(0.30) — 에피소드 진행에 따른 라벨 정제 확인
+  - **요약 타이밍 정합**: 세 건 모두 잠정 종료 +10분(병합 창) 정각에 발송. 발화 빈도 3건/8h ≈ 9/일로 백테스트(7.3/일)와 정합
+  - **부수 확인**: D1 APPEARED 실수신 1건 (61k 벽, `persisted_seconds` 49,885→50,203s로 재시작·unconfirmed를 넘는 스푸핑 타이머 보존 §12.1 규칙 2 실증. 세션 1은 send_d1 off라 로그만 — 정책 게이트 동작 확인). 13:27 단절 시 epoch 종료 + diff gap 마킹 + 정상 종료 경로 확인
+  - **완료 기준 (2) — `D1Suppressed` 실전 사례 0건, 합성 검증으로 갈음 (사용자 결정)**: 8h 동안 1000 BTC를 일시 돌파했다 3s 내 이탈한 벽이 없었음 (현재 1k+ 벽은 61k 하나뿐이고 안정적 — 자연 발생은 희소 사건). 억제 로직은 단위 테스트 3건(지속 미달 하회/소멸/스트릭 교체)이 커버하며, 실전 사례는 M5 VPS 상시 운영 중 로그 관찰로 이월. 발생 시 이 기록에 추기
+
+**M2 완료** (2026-07-12).
+
+### M2 구현 노트 (2026-07-12)
+
+- **D1 데드밴드 재발화 안 함 (PRD §8 D1 조건 3 해석)**: 활성(APPEARED 발화) latch는 REMOVED까지 유지 — exit(500)~임계(1000) 데드밴드로 내려갔다 회복해도 재발화하지 않는다. 조건 3의 "임계 밑으로 내려갔다 다시 올라오면 리셋"은 REMOVED 이후의 재출현 재계측으로 해석: 데드밴드 내 재발화는 같은 벽에 중복 인텐트(M4 D5)를 만들고 `EXIT_RATIO` 히스테리시스 설계 의도와 충돌. **사용자 리뷰 대상** — 다르게 읽는다면 detectors/d1.py의 활성 분기만 수정하면 됨
+- **epoch 종료 시 D1 리셋**: 활성·후보 전부 폐기, 보류 중 소멸은 REMOVED 무판정 (aggTrade 공백 중 체결 귀속이 얼어 FILLED/PULLED 오판 — §5.4). 새 epoch에서 임계 이상 벽은 다시 APPEARED부터 (타이머는 레지스트리 필드가 보존하므로 재개 직후 빠르게 재발화 — M4에서 INTERRUPTED→재등록 의미와 정합). D2 쿨다운·dedup 쿨다운은 판정 누적이 아닌 스팸 억제기라 epoch를 넘겨 유지
+- **`telegram.chat_id`는 str 유지** (M0 노트의 int→str 허용 여부 종결): 스키마 완화 없이 현행 유지 — 그룹 chat_id는 YAML에서 `"-100..."`처럼 따옴표 필수. 로더의 "조용한 강변환 없음" 원칙 유지가 함정 하나보다 우선
+- **알림 실패 시 5회 재시도 후 드롭**: D1/D2는 시효성 신호라 무한 재시도 무가치. D5 종국 알림의 유실 방지는 M4 `alerts_outbox` 소관 (PRD §9.4 적용 범위 한정과 일치)
+
+### M2 구현 노트 — D2 v1.3 개편 (2026-07-12 추가)
+
+- **로컬 `config.yaml` 재동기화 필요**: v1.3에서 `thresholds` D2 키가 교체되어 구 config는 `ConfigError`로 기동 거부됨(의도된 동작). 이 세션에서 로컬 config.yaml을 example로 재복사함 — 커스터마이즈가 없었음을 diff로 확인
+- **에피소드 요약의 체크포인트 규칙**: 병합 대기(잠정 종료~확정 종료) 중의 저볼륨 체결은 재점화 시에만 에피소드에 편입되고 확정 종료 요약에서는 제외 — "구간"과 누적치의 정합 유지
+- **틱의 체결 두절 처리**: trade_window 만료는 새 체결 도착에 의존하므로, 체결이 창 길이(60s) 이상 두절되면 틱이 이를 "창이 식음"과 동치로 보고 잠정 종료를 시작
+- **요약 구간 시각은 KST 표기** (dispatcher 상수) — 단일 사용자 전제, 필요 시 설정화는 M6 이후
+- **백테스트 재생 주의**: `scripts/backtest_d2.py`는 1분봉 근사 재생이라 창 경계 정렬 아티팩트를 1ms 축소로 보정함 — 실서비스(체결 단위 롤링)와 감도가 약간 다를 수 있음. M2 검증 런에서 실제 발화 빈도 확인 필요
+
+## M3 — 레벨별 체결 집계 + D3 + D4
+
+- [x] `cum_traded_at_level` 집계: aggTrade를 가격·aggressor 방향으로 레벨에 귀속 — M1 구현을 유지하되 **벽 레벨 보존 예외 추가 (PRD §7 v1.4, 사용자 확정)**: 벽 레지스트리 등록 가격은 top-20 창 이탈에도 엔트리(생애 누적) 보존, 벽 소멸 시 자연 제거 — `state/level_tracker.py` `retain` predicate 주입 (결정 기록 참고)
+- [x] 접촉 episode 트래커 (D3/D4 공용 판정 단위, PRD §8 D3 v1.2) — `detectors/contact.py`: best 도달~반등/관통/소멸, 관통은 체결가 주 신호(즉시) + best 지속 보조 신호(플리커 복귀 시 카운터 리셋). D5 케이스 2가 비-벽 레벨 리필을 합산하므로(M4) episode는 접촉된 모든 레벨에 열고 D3가 D1 활성 벽만 걸러 소비
+- [x] D3 흡수: 접촉 episode 단위 판정 — 가격 도달 + `ABSORPTION_MIN` + 비관통, 실현률 산출 — `detectors/d3.py`. **발화는 episode 종료 시 확정 (PRD §8 D3 v1.4, 사용자 확정 — 결정 기록)**, 등록 크기 S는 `D1Appeared.qty`를 service가 중개
+- [x] D4 아이스버그 (v1.2 경로 누적): episode 내 체결 근접(`REFILL_WINDOW_MS`) 양의 델타만 `refill_added`로 인정, `ICEBERG_MARGIN` + 체결→회복 쌍 ≥ `ICEBERG_MIN_TRADES`(aggTrade 메시지 수 기준) — `detectors/d4.py` (체결 버퍼는 episode와 독립 — 순서 역전 대응, 전역 시간 프루닝으로 메모리 바운드. episode당 1회 래치)
+- [x] D3/D4는 알림 발송 없이 로그만 기록 (PRD §9.1 — dispatcher 미대상으로 자연 성립. **DB events 테이블은 M6 소관 유지, 사용자 확정** — 구조화 로그가 튜닝 데이터로 이미 조회 가능)
+- [x] 단위 테스트: 관통 3분기(체결가/best 지속/플리커 비관통) + D4 경로 케이스(체결 직후 회복 = 인정 / 500ms 밖 무관 추가 = 배제) + 생애 누적 다회 episode — `tests/test_contact.py` `test_d3.py` `test_d4.py` `test_state.py` (누적 210 passed)
+- [x] **(v1.2)** 결정적 replay 테스트 픽스처: 합성 + 실캡처 시퀀스 재생 — 재연결·스트림 순서 역전·diff U/u 갭 3종 필수 커버 (PRD §13) — `tests/replay/`(러너 + JSONL 픽스처), `tests/test_replay.py`. **실물 MonitorService 구동** (service에 clock/monotonic 주입 추가 — 하니스가 배선을 미러링하면 배선이 검증 밖에 남기 때문). 실캡처는 `scripts/capture_stream.py`로 60s 기록(1,476 프레임), 골든 고정 + 이중 재생 결정성 단언
+- [x] ~~Bookmap 육안 대조 절차 확정 (PRD 오픈 퀘스천 #5)~~ → **기각 (사용자 확정 2026-07-13)**: Bookmap 대조 자체를 M3에서 제외 — 결정 기록·PRD v1.4 참고
+
+**완료 기준 (PRD v1.4)**: 결정적 replay 테스트 통과 (Bookmap 육안 대조는 기각).
+
+검증 기록:
+- **2026-07-13 replay 테스트 통과 (완료 기준 충족)**: 필수 3 시나리오 — ① 재연결: 단절 시 진행 episode 무판정 폐기 + 재개 후 생애 누적(300+200=500, 33%)으로 D3 확정, D1 재발화(타이머 보존 §12.1 규칙 2) ② 순서 역전: 접촉 스냅샷보다 선착한 체결도 리필 쌍 성립(쌍 5/5 충족으로 입증) ③ diff U/u 갭: 전 벽 unconfirmed + 진행 판정 폐기 + 같은 이벤트 내 epoch 재개. 각각 이중 재생 결정성 단언 포함, 실캡처 60s 재생 골든(벽 7개 수렴, 실존 1k+ 벽 D1 APPEARED 1건) 일치. 전체 219 tests passed
+- 2026-07-13 30s 스모크 런 (더미 토큰): config → 레지스트리 복원 → 기준선 부트스트랩(1440봉, 10.25 BTC/분) → 연결 → epoch 1 시작, 에러/경고 0건
+- 실전 D3/D4 발화 관찰은 상시 운영 로그로 이월 (대형 벽 접촉·아이스버그는 희소 사건 — M2의 `D1Suppressed` 이월과 동일 패턴). 발생 시 이 기록에 추기
+
+### M3 구현 노트 (2026-07-13)
+
+- **배선 순서가 판정 정합성을 가름 (service.py docstring에 명시)**: 벽 소멸 diff 처리 시 episode REMOVED 종료 → D3 확정 판정 → D1 REMOVED 판정 → D1 이벤트의 D3 등록 해제 라우팅 순. D3 판정 시점에 D1 등록이 살아있어야 소멸(FILLED성 소진)로 끝난 흡수가 잡힌다
+- **D4 체결 버퍼는 epoch 게이트 밖** (상태 적재 성격, 500ms 바운드) — epoch 종료 시 D4 누적(`_acc`)만 리셋. LevelTracker의 생애 누적도 상태 계층이라 epoch를 넘겨 유지 (D1 귀속과 동일 — PRD §5.4 "상태 적재는 계속")
+- **판정 시간축은 이벤트 타임스탬프**: D3/D4의 크로스 스트림 근접·episode 지속시간은 `clock()` 호출이 아닌 `local_monotonic_receive_time` 연산 → replay 결정성이 픽스처 타임스탬프만으로 성립. 클록 주입이 필요한 것은 D1(wall-clock)·epoch 추적기뿐이고 MonitorService 생성자 파라미터로 노출 (운영 기본값 실물 시계)
+- **실캡처 픽스처 재캡처 시**: `scripts/capture_stream.py --duration 60 --out tests/replay/fixtures/<name>.jsonl` 후 `tests/test_replay.py::TestLiveCapture` 골든(벽 수·이벤트 시퀀스)을 재생성할 것
+
+## M4 — D5 상태기계 + 확정 알림
+
+- [x] `INTENT_REGISTERED` 등록 (D1 APPEARED 입력, S = 발화 시점 `last_qty` 고정 — 이후 크기 변화 미반영, PRD §8 D5 v1.2) — `detectors/d5.py` `on_d1_appeared`
+- [x] 전이 1: 가격 도달 + 체결 누적 ≥ S×`REALIZE_PCT` → `EXECUTION_CONFIRMED` (케이스 1 — "해당 레벨 체결" 확인이지 원 표시 주문의 체결 확인 아님, PRD §8 D5 판정 의미). **D3와 달리 관통 배제 없음** — 관통 여부와 무관하게 그만큼 체결됐다는 사실 자체가 판정 대상(결정 기록 참고)
+- [x] 전이 2: PULLED → 케이스 2 누적을 **먼저** 평가(충족 시 `EXECUTION_INFERRED_ABOVE` 우선), 미충족 시 `INTENT_WITHDRAWN`; FILLED 귀속 + 실현률 미달은 `PARTIALLY_EXECUTED` (로그만 — 전 종국 레코드에 실현률 필드, PRD §8 D5 v1.2) — `on_d1_removed`
+- [x] 전이 3: 상위 구간 D4 누적 ≥ S×`REALIZE_PCT_ABOVE` → `EXECUTION_INFERRED_ABOVE` (케이스 2, 리필 확인분만 합산 — PRD §8 D5 집계 방식). 상위 구간 = 의도 레벨과 같은 side best(mid 아님, 결정 기록 참고) 사이 — D4에 lifetime(episode 비종속) 리필 누적 신설(`sum_lifetime_refill_above`) → **(주) PRD v1.6에서 D4와 함께 임시 비활성 (2026-07-15 결정 기록)** — 코드·테스트는 보존, 배선만 제외
+- [x] 레벨 소멸(REMOVED/tombstone/하한 미달) 시 D5 즉시 종국 평가 — TTL 대기 없음, 소멸 원인 4분류 + 동시 발생 우선순위(CONFIRMED > INFERRED_ABOVE > PARTIALLY_EXECUTED > WITHDRAWN, epoch 종료는 무조건 INTERRUPTED) (PRD §8 D5 v1.2)
+- [x] ~~`INTENT_TTL` 만료 → `INTENT_EXPIRED` (로그만)~~ → **폐지 (PRD v1.5, 2026-07-14)**: 인텐트 수명 = 벽 수명 — 상시 벽 사각지대 누락 시나리오로 배포 직후 사용자 지적, 결정 기록 참고
+- [x] **(v1.2)** epoch 종료 시 활성 intent `INTERRUPTED` 마킹 + D3/D4 누적 리셋 (PRD §5.4, §12) — `d5.reset()`이 이벤트를 반환(D1~D4의 void reset()과 다름). **배선 순서 위험**: `d5.reset()`은 반드시 `d4.reset()`보다 먼저 — INTERRUPTED의 `above_realized_rate`가 D4 lifetime 리필에 의존(service.py 모듈 docstring에 명시)
+- [x] `intents` 개수/시간 상한 (메모리 바운드) — 활성 인텐트 수 상한(`MAX_ACTIVE_INTENTS=1000`, 코드 상수) + 벽 소멸 시 종국 (v1.5 — 구 TTL 시간 상한은 폐지, 벽 희소성으로 충분)
+- [x] 확정 알림 포맷: 실현률 %, 등록→확정 소요시간 포함 (PRD §9.3), 케이스 2는 "추정" 명시 — PRD §9.3 템플릿 그대로 + 발생 시각(KST) 한 줄 추가(§9.4 "지연 발송임을 수신자가 알 수 있게")
+- [x] **(v1.2)** D5 알림 dedup: 종국 `(intent_id, terminal_state)` / 진행률 `(intent_id, 계열, 경계)` — 시간 쿨다운 미적용 (PRD §9.2) — 순수 멱등 셋(`AlertDispatcher._d5_sent`), 기존 쿨다운 기반 `AlertDeduper`와 별개
+- [x] **(v1.2)** `alerts_outbox`: D5 종국 알림 선기록→발송→sent 마킹, 재시작 시 미발송 재전송 (멱등 키 중복 차단, 원 이벤트 시각 표기 — PRD §9.4) — `persistence/alerts_outbox.py`, `TelegramSender.enqueue(on_sent=...)` 콜백으로 발송 확인. 멱등 키는 intent_id가 아니라 `(side,price,terminal_state,recorded_at)`(서비스 wall-clock) — 근거는 결정 기록
+- [x] 단위 테스트: 상태 전이 전 경로 (확정 1/2, 부분 체결, 철회, 만료, INTERRUPTED) + 동시 발생 우선순위 케이스 — `tests/test_d5.py` (21 tests)
+- [x] **(v1.2)** D5 replay 테스트: M3 픽스처 확장 — 재연결·순서 역전·누락 시나리오에서 상태기계 결정성 검증 (PRD §13 — M4 완료 기준) — 재연결·diff갭 픽스처에 INTERRUPTED 결정성 단언 추가(`tests/test_replay.py`). 순서 역전 픽스처는 D1 비적격 벽(500<1000)이라 D5 관여 없음 — 케이스1/2/TTL은 `test_service.py` 파이프라인 테스트로 커버(신규 replay 픽스처 불필요 판단, 사용자 확인 없이 개발자 판단)
+- [x] **(코어 전이 테스트 통과 후)** D5 진행률 알림: `progress_step_pct`(0.2) 경계당 1회, 계열(케이스 1/2)별 독립 커서, dedup 키에 경계값 포함해 쿨다운 우회 (PRD §8 D5 진행률 알림, §9.2 예외) — `evaluate()`의 `_progress_events`, 종국 임계 미만 경계만(0.6 기본값 기준 실효 0.2/0.4)
+
+**완료 기준 (PRD)**: 케이스 1/2 알림 각 1건 이상 실전 확인.
+**검증 방법**: 실전 수신한 알림의 근거 이벤트를 로그에서 역추적해 타당성 확인.
+
+검증 기록:
+- **2026-07-14 자동화 완료** (이번 세션 완료 기준 — 사용자 확정, 실전 알림 확인은 아래 참고): 단위 테스트(`test_d5.py` 21, `test_d4.py` lifetime 추가 6, `test_alerts_outbox.py` 7, `test_alerting.py` D5 배선 12) + service 파이프라인 테스트(케이스1 확정+outbox 기록, 케이스2 추정, TTL 만료, epoch 종료 INTERRUPTED, 재시작 재전송 — `test_service.py`) + replay 결정성(재연결·diff갭 시나리오 INTERRUPTED, 실캡처 60s 인텐트 등록) 전부 통과. 전체 271 tests passed. 30s 스모크 런(더미 토큰): epoch 시작 → 실제 D1Appeared(1361.66 BTC 벽) 발화 → Telegram 404(더미 토큰) 5회 재시도 후 정상 드롭 로그, 크래시 없음
+- **실전 케이스1/2 알림 확인 — 미실시, 후속 필요**: PRD 완료 기준의 "실전 확인"은 1000+ BTC 벽이 실제로 60%+ 체결/상위 리필되는 예측 불가능한 시장 이벤트를 요구(M3 60s 실캡처에서도 벽 1개만 관측되는 수준의 희소 사건). M2도 동일 사유로 구현 완료 후 별도 세션(8h 검증 런)에서 진행한 전례를 따라 이번 세션 범위에서 제외(사용자 확정 2026-07-14). 실토큰 상시 운영 중 로그 관찰로 확인되는 대로 이 기록에 추기
+- **2026-07-14 케이스 2 실전 알림 1건 확인** (03:43:27 KST, 61k bid — VPS 로그·DB 역추적으로 타당성 검증): 01:20:10 KST TTL 폐지 배포 재시작(직전 01:20:01의 구 코드 마지막 `intent_expired`가 TTL 사각지대의 실물 증거) → 01:21:06 D1 재APPEARED·인텐트 등록(S=1366.01013) → 01:45/03:24 진행률 20%/40%(경계값 정확 일치) → 03:43:27 `execution_inferred_above`(추정 실현률 62.6%, 등록→추정 8,541s = 142m 21s). outbox 왕복(선기록 → sent=1) 확인, Telegram 메시지 필드 전수 로그와 일치. 정황 근거: 같은 시간대 D2가 매도 우위 버스트 반복 판정("매도 흡수(정체)"/"양방향 충돌"), 기준선 대비 리필 확인분 855 BTC는 노이즈 수준 초과. **반사실: 구 TTL 코드였으면 01:51 만료로 이 알림은 발화 불가** — TTL 폐지(PRD v1.5)의 실전 검증을 겸함. 단, 검토 과정에서 케이스 2 구조 한계가 확인되어 07-15 D4·케이스 2 임시 비활성(결정 기록 참고). **케이스 1 실전 확인은 계속 미실시** — 완료 기준 잔여분 (→ 2026-07-20 확인, 아래)
+- **2026-07-20 케이스 1 실전 알림 1건 확인 → M4 완료 기준 전부 충족** (17:34:48 KST, 64,242.01 bid — 2026-07-22 전량 추출본(`scripts/fetch_vps_full_extract.sh`) 로그·outbox 역추적으로 타당성 검증): 16:53:49 KST D1 APPEARED·인텐트 등록(S=1,118.29591) → 진행률 20%(17:23:40)/40%(17:34:28, `progress_step_pct` 경계값 정확 일치) → 17:34:48 D1 REMOVED `attribution=filled`(peak 1,215.17 → 잔량 368.34) 동시 `execution_confirmed` — 레벨 실측 체결 678.1 BTC, 실현률 60.6%(임계 60%), 등록→확정 2,458.8s = 40m 58s. outbox 왕복(id 3, 선기록 → sent=1) 확인, Telegram 메시지 필드 전수 로그와 일치. 케이스 2(07-14)에 이어 케이스 1까지 실전 확인 — **M4 완료**. 부기: 이 벽은 07-12부터 추적된 1,000+ BTC 이동 벽(61k→60.5k→61.5k→61k→64080→64242→63k→61k→62k)의 유일한 FILLED 종국 — 나머지 8회 이동은 전부 PULLED로, 스푸핑성 이동과 실체결이 attribution으로 구분됨을 실증
+
+### M4 구현 노트 (2026-07-14)
+
+- **D5는 D3/접촉 episode에 의존하지 않음**: 케이스1은 D1/D3가 이미 쓰는 `cum_traded_lookup` 콜백만 사용 — 그 가격에 체결이 있었다는 사실 자체가 "가격 도달"의 증거이므로 별도 판정 불필요. D3의 "관통 없이 버텼는가"와 D5 케이스1의 "실제로 그만큼 체결됐는가"는 별개 질문 — 관통 후에도 케이스1은 발화할 수 있다(의도적).
+- **D4 lifetime 리필과 기존 episode-scoped `_acc`는 같은 인정 리필 델타를 이중 기록**하지만 리셋 시점이 다르다(전자는 epoch 종료만, 후자는 episode 종료도) — 데이터 중복이 아니라 서로 다른 소비자(D4 자신의 발화 판정 vs D5 케이스2 lifetime 합산)를 위한 병행 관측.
+- **"상위 구간" 상한은 같은 side의 best 가격**(BUY 인텐트=best_bid) — mid 아님. bid/ask 레벨은 정의상 각자의 best를 넘어 존재할 수 없어 mid를 쓰든 same-side best를 쓰든 그 사이엔 데이터가 없어 결과가 같다(위험 없는 단순화).
+- **`D5Detector.reset()`은 이벤트를 반환** — D1~D4의 `reset() -> None`과 다른 유일한 시그니처. epoch 종료 시 INTERRUPTED 자체가 유효한 종국 레코드이기 때문. 호출자(service)는 `for event in d5.reset(): self._emit(event)` 형태로 소비해야 한다.
+- **service의 `EpochEnded` 처리 순서가 정합성을 가름**: `d5.reset()`을 `d4.reset()`보다 반드시 먼저 호출 — INTERRUPTED의 `above_realized_rate`가 D4 lifetime 리필 조회에 의존하는데 `d4.reset()`이 먼저 돌면 그 데이터가 이미 지워진다(M3의 D3 vs D1 REMOVED 순서 교훈과 같은 종류).
+- **outbox 멱등 키는 `(side, price, terminal_state, recorded_at)`** — `intent_id`(D5Detector 내부 프로세스 카운터)를 쓰지 않은 이유: 재시작마다 0부터 다시 시작해 다른 인텐트가 우연히 같은 값을 얻으면 `INSERT OR IGNORE`가 진짜 알림을 조용히 삼킬 수 있음. `recorded_at`은 서비스가 outbox 기록 시점에 wall-clock으로 찍는다(D5Detector 자체는 monotonic만 다룸 — TTL/소요시간 계산용).
+- **`AlertDispatcher`에 `set_outbox()` setter가 있는 이유**: outbox는 `db_path` 확정 후 `startup()`에서 열리는데(`WallStore`와 같은 지연 오픈 패턴), dispatcher는 생성자에서 이미 만들어지므로 사후 주입이 필요하다.
+- **`_cum_traded_at_level`/`_refill_above_lookup` 파이프라인 테스트 함정**: 실제 top-20 depth 스냅샷으로 해당 가격이 `LevelTracker`에 먼저 진입해야 그 뒤의 체결이 `cum_traded_at_level`에 반영된다(레벨 미존재 시 조용히 0) — D3 파이프라인 테스트(M3)와 동일한 패턴, D5 케이스1 파이프라인 테스트에서도 재확인.
+
+## M5 — Watchdog + systemd + 배포
+
+- [x] 인프로세스 워치독 **(v1.2 스트림별)**: depth·diff는 `stale_seconds`, aggTrade는 `trade_stale_seconds` 초과 시 스트림명 명시한 `FEED_STALE` 알림 + epoch 종료 (PRD §11.1, §5.4) — **2026-07-12 D1&D2 우선 배포 준비로 선행 구현** (staleness 감지+epoch 종료는 M1 기존, Telegram 배선 추가). on/off 없이 상시 발송, 재연결 플랩 억제는 스트림별 쿨다운(`cooldown_seconds`) 재사용
+- [x] 하트비트 파일 기록 + 외부 경량 워치독(systemd timer)이 행(hang) 상태 감지 → `PROCESS_DOWN` 알림 **+ 자동 재시작** (PRD §11.1 v1.7 — 2026-07-15): service가 `heartbeat_interval`(10s) 주기로 파일 touch(이벤트 루프 생존 신호, 경로는 `--heartbeat-file` CLI 인자 — `--db-file` 관례), `deploy/watchdog_check.py`(시스템 python3 stdlib 전용)를 timer 60s 주기 구동 — mtime 나이 > 60s(상수)면 정지 알림 1회 + `systemctl restart` + 해소 통지 1회, `is-active` inactive(의도적 정지) 스킵 — `watchdog/heartbeat.py`, `deploy/order-monitor-watchdog.{service,timer}`, 테스트 18건 (누적 289 passed)
+- [x] systemd 유닛: `Restart=always, RestartSec=5` — `deploy/order-monitor.service` 작성 (2026-07-12, Docker 기각 — 결정 기록). VPS 실적용·검증은 배포 시
+- [x] 로그 로테이션 설정 — `RotatingFileHandler`(M0 기존) + journald 용량 제한 절차를 RUNBOOK §5에 문서화 (2026-07-12)
+- [x] VPS 준비: 리전 선정 + Binance WS/REST 접속 검증 (PRD §11.3, 절차는 RUNBOOK §0) — **Hostinger KVM 말레이시아(쿠알라룸푸르) 리전**, 2026-07-12 D1&D2 우선 배포 시 검증·적용 완료 (이후 M3/M4 실운영이 접속 유효성을 지속 실증 — 07-14 케이스 2 실전 알림 등. 사용자 확인 2026-07-15로 기록 정리)
+- [x] 배포 절차 문서화 (README 또는 runbook) — `deploy/RUNBOOK.md` (2026-07-12: 지오블록 검증, 설치, env 시크릿, systemd, 운영 절차, 7일 검증 기준)
+
+**완료 기준 (PRD)**: VPS에서 7일 무인 운영, 조용한 실패 0건.
+**검증 방법**: 7일 후 로그 감사 — 모든 단절/재시작 이벤트에 대응하는 Telegram 통지가 존재하는지 대조 (절차·행 훈련 포함 RUNBOOK §7).
+
+검증 기록:
+- 2026-07-15 구현분 자동화 검증: 하트비트(기록·mtime 전진·배선·기록 실패 생존) 4건 + watchdog_check(stale 3분기·전이 1회성·발송 실패 격리·의도적 정지 스킵·파싱) 14건, 전체 289 passed. `watchdog_check.py`는 시스템 python3 파싱 확인
+- VPS 배포 + 행 훈련(`kill -STOP` → PROCESS_DOWN → 자동 재시작 → 해소 통지) + 7일 무인 운영 검증 — ~~미실시, 배포 세션에서 진행~~ → 워치독 배포 2026-07-15, 7일 감사 2026-07-22 (아래). **행 훈련만 계속 잔여**
+- **2026-07-22 7일 무인 운영 감사 통과 — 조용한 실패 0건** (감사 대상: 2026-07-12 14:26 UTC 최초 기동 ~ 07-22 03:30 UTC 전량 추출, 약 9.5일. v1.7 코드+워치독 타이머 완비 기준으로는 07-15부터 약 6.9일. RUNBOOK §7 기준 대조):
+  - **단절/재시작 전수 대조**: WS 단절 3회(07-17 05:19, 07-19 05:25, 07-21 05:38 UTC) 전부 disconnect → epoch 종료(INTERRUPTED) → 2s 내 재연결·epoch 재시작. staleness 1회(07-12 18:11, depth·diff 동시)도 FEED_STALE 경로로 자동 복구. 크래시성 재시작 0건 — `config loaded` 8회는 전부 의도적 갱신(systemd 로그 clean stop 확인). 대응 통지 누락 없음
+  - **하트비트/워치독 오탐 0건**: 타이머 가동(07-15) 후 점검 8,036회 전원 `stale=False` — PROCESS_DOWN 발화 0, 오탐 0 (단, 발화 경로 자체는 행 훈련 미실시로 실전 미검증)
+  - **알림 전달 유실 0건**: 기간 총 433건 발송. 07-19 00:36 UTC Telegram TimeoutError 3연속 후 attempt=4 성공 — 재시도 경로 실전 실증(재시도 소진 드롭 0건)
+  - **관찰 (전제 보정)**: RUNBOOK §7의 "Binance 24h 강제 단절 매일 발생" 전제와 달리 실측 단절 주기는 약 48h — 검증 항목으로서의 재연결 실증에는 영향 없음
+  - **발견 이슈 (후속)**: 재시작·재연결마다 서 있는 벽에 D1 APPEARED 재발화 — 기간 중 APPEARED 19건 vs REMOVED 8건, 차이 11건이 재시작 8회+재연결 3회와 일치 (send_d1 활성화 후 중복 알림으로 표면화. 해소 방향은 결정 기록 참고)
+  - D1Suppressed 실전 사례(M2 이월 관찰 항목): 기간 중 0건 — 계속 이월
+
+### M5 구현 노트 (2026-07-15)
+
+- **하트비트는 파이프라인 헬스로 게이트하지 않는다** — 이벤트 루프 생존 신호일 뿐, 피드 정지는 인프로세스 FEED_STALE 소관 (관심사 분리). 기록 실패(OSError)도 파이프라인을 죽이지 않음 — stale해진 하트비트를 외부 워치독이 PROCESS_DOWN으로 승격하는 것이 설계된 에스컬레이션 경로
+- **워치독 설치 순서가 오탐을 가름**: 하트비트를 쓰는 서비스 유닛을 먼저 갱신·재시작한 뒤 타이머를 켠다 — 역순이면 하트비트 파일 부재로 즉시 PROCESS_DOWN 오탐 (RUNBOOK §4에 명시)
+- **전이 처리 중 스크립트 사망 시 재시도 의미론**: 상태 파일 기록이 알림·재시작 뒤라, 도중 죽으면 다음 주기에 전체 재시도 — 알림 유실보다 중복을 택함
+- **chat_id는 config.yaml에서 정규식 추출** (env 이중화 기각): 단일 진실원 유지 — chat 변경 시 한 곳만 수정. 토큰은 기존 `/etc/order-monitor/env` 파싱
+

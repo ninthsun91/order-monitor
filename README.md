@@ -2,8 +2,9 @@
 
 Binance Spot BTC/USDT 오더북·체결을 WebSocket으로 감시하고, 대형 물량벽(D1)과
 볼륨 버스트(D2)를 Telegram으로 알리는 단일 프로세스 headless 서비스.
-요구사항 원천은 [PRD](PRD_orderbook_intent_monitor.md), 진행 상황은
-[DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) 참고.
+요구사항 원천은 [PRD](docs/PRD_orderbook_intent_monitor.md), 진행 상황은
+[docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md) 참고 (결정 기록·완료 마일스톤 상세 등
+문서 전체 안내는 [CLAUDE.md](CLAUDE.md)의 Documentation map).
 
 ## 요구 사항
 

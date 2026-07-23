@@ -1,4 +1,4 @@
-"""Binance combined stream WebSocket 클라이언트 (raw aiohttp — DEVELOPMENT_PLAN 결정 기록).
+"""Binance combined stream WebSocket 클라이언트 (raw aiohttp — docs/DECISIONS.md 2026-07-11).
 
 - combined stream URL로 세 스트림을 한 연결에 구독 — URL 구독은 연결 성립 = 구독 완료
   (별도 SUBSCRIBE 프레임 없음). epoch 시작은 어차피 세 스트림 각각의 첫 수신을
@@ -9,7 +9,7 @@
   클라이언트 자체 ping(`heartbeat=20`)을 켠다 — 서버 CLOSE가 도달하지 않는 half-open
   TCP에서 pong 미수신으로 receive()가 실패해 재연결 루프가 작동하게 (M1 검증 런 발견:
   autoping만으로는 죽은 연결에서 무한 블록)
-- 연결/단절/재연결 대기는 구조화 로그로 남긴다 (DEVELOPMENT_PLAN M1 체크박스)
+- 연결/단절/재연결 대기는 구조화 로그로 남긴다 (docs/MILESTONE_ARCHIVE.md M1)
 - 파싱 실패는 로그 후 계속 — 지속 실패 시 이벤트가 흐르지 않아 staleness로 표면화
   (PRD §14 정규화 계층 감지)
 """

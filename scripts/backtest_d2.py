@@ -1,7 +1,7 @@
 """D2 백테스트 — 실제 D2Detector에 Binance 1m klines를 재생 (M6 튜닝 재사용).
 
 용도: 상대 임계·에피소드 파라미터가 실데이터에서 어떤 온셋/요약을 내는지 확인.
-2026-07-12 M2 개편 검증에 사용 (DEVELOPMENT_PLAN 결정 기록 참고).
+2026-07-12 M2 개편 검증에 사용 (docs/DECISIONS.md 2026-07-12 참고).
 
 데이터 파일: [{"t": openTimeMs, "vol": float, "buy": takerBuyFloat, "close": float}, ...]
 수집 예:

@@ -63,7 +63,7 @@ class TestTradeWindow:
         assert window.sum_qty(Side.BUY) == Decimal("2.5")
 
     def test_memory_bounded_over_long_run(self):
-        # 시간 상한 동작 = 메모리 바운드 (DEVELOPMENT_PLAN M1 체크박스)
+        # 시간 상한 동작 = 메모리 바운드 (docs/MILESTONE_ARCHIVE.md M1)
         window = TradeWindow(window_seconds=60)
         for i in range(10_000):
             window.add(trade("61000", "0.1", t_ms=i * 100))  # 100ms 간격 1000초분

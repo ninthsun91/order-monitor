@@ -9,7 +9,7 @@ systemd timer(order-monitor-watchdog.timer, 60s 주기)가 root로 구동한다.
 하는 최후 방어선이기 때문. 임계·경로는 스크립트 상수 (config.yaml 스키마는 PRD §10
 키 전수 고정이라 건드리지 않음 — Telegram 재시도 상수와 동일 취급).
 
-동작 (사용자 확정 2026-07-15, DEVELOPMENT_PLAN 결정 기록):
+동작 (사용자 확정 2026-07-15, docs/DECISIONS.md):
 - `systemctl is-active` == inactive → 의도적 정지(유지보수)로 간주, 조용히 스킵
 - 하트비트 파일 부재 또는 mtime 나이 > STALE_AFTER_SECONDS → stale
 - ok→stale 전이: PROCESS_DOWN 알림 1회 → `systemctl restart order-monitor`

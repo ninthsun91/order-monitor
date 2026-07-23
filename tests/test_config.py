@@ -132,7 +132,7 @@ def test_absorb_multiple_must_exceed_one(tmp_path):
 
 def test_stale_v1_10_keys_rejected(tmp_path):
     # v1.11 키 교체 — 구 config.yaml(iceberg_*·realize_pct_above 잔존)은 기동 거부
-    # (엄격 스키마 — VPS 배포 시 config 동시 수정 필수의 실증, NEXT_STEPS §0)
+    # (엄격 스키마 — VPS 배포 시 config 동시 수정 필수의 실증 — config.example.yaml 대조)
     bad_config = tmp_path / "config.yaml"
     bad_config.write_text(
         EXAMPLE_CONFIG.read_text().replace(

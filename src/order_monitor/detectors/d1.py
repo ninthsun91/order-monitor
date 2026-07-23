@@ -17,7 +17,7 @@
 내려갔다 회복해도 재발화하지 않는다. PRD §8 D1 조건 3의 "임계 밑으로 내려갔다
 다시 올라오면 리셋"은 REMOVED 이후의 재출현 재계측으로 해석 (데드밴드 내 재발화는
 같은 벽에 중복 인텐트를 만들고 EXIT_RATIO 히스테리시스 설계 의도와 충돌 —
-DEVELOPMENT_PLAN M2 구현 노트 참고).
+docs/MILESTONE_ARCHIVE.md M2 구현 노트 참고).
 
 epoch 종료 시 reset(): 활성·후보 전부 폐기, REMOVED 판정 없음 — 판정 보류 중엔
 체결 귀속이 얼어 FILLED/PULLED가 오판되기 때문 (PRD §5.4). 새 epoch에서 임계
