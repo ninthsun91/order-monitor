@@ -562,3 +562,181 @@ def test_outbox_unsent_alert_resent_on_restart(tmp_path):
     assert svc2.telegram.pending() == 1  # 미발송 행이 재큐잉됨
     svc2._store.close()
     svc2._outbox.close()
+
+
+# ── W 주시 관측 파이프라인 (PRD §8 W v1.13) ──────────────────
+
+
+class _Clock:
+    def __init__(self, now=0.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+class _CaptureSender:
+    def __init__(self):
+        self.sent = []
+        self.on_sent_callbacks = []
+
+    def enqueue(self, text, on_sent=None):
+        self.sent.append(text)
+        self.on_sent_callbacks.append(on_sent)
+
+
+TF_15M_MS = 15 * 60_000
+
+
+def watch_agg(price, qty="1", t_ms=0, side=Side.SELL):
+    return AggTradeEvent(
+        agg_trade_id=t_ms,
+        price=Decimal(price),
+        qty=Decimal(qty),
+        aggressor_side=side,
+        exchange_time_ms=t_ms,
+        local_monotonic_receive_time=t_ms / 1000.0,
+    )
+
+
+def make_watch_service(tmp_path, mono, wall):
+    svc = MonitorService(
+        load_config(EXAMPLE_CONFIG),
+        db_path=tmp_path / "monitor.db",
+        telegram_token="test-token",
+        clock=wall,
+        monotonic=mono,
+    )
+    svc.startup()
+    sender = _CaptureSender()
+    svc.dispatcher._sender = sender  # 발송 텍스트 검증용 치환 (기존 큐 카운트 대신)
+    return svc, sender
+
+
+def _tick(svc):
+    """_staleness_loop 본문의 W 부분 — replay 방식의 동기 구동."""
+    for event in svc.watch.on_tick():
+        svc._emit(event)
+    svc._flush_watches()
+
+
+def test_watch_full_cycle_register_contact_report_invalidate(tmp_path):
+    mono, wall = _Clock(0.0), _Clock(1_000_000.0)
+    svc, sender = make_watch_service(tmp_path, mono, wall)
+    start_feed(svc)
+
+    # 등록 (텔레그램 명령 핸들러 경로) — 즉시 영속
+    response = svc._handle_watch_command(Decimal(65600), Decimal(65600), "65600")
+    assert "주시 등록" in response
+    assert svc._watch_store.count() == 1
+
+    # 위에서 접근 → 첫 접촉 (지지 테스트)
+    svc.on_event(AGG, watch_agg("65700", t_ms=1000))
+    svc.on_event(AGG, watch_agg("65650", t_ms=2000))
+    assert any("지지 테스트 시작" in text for text in sender.sent)
+
+    # 계측 + 주기 리포트 (활동 게이팅 통과)
+    svc.on_event(AGG, watch_agg("65600", qty="5", t_ms=3000))
+    mono.now = 601.0
+    _tick(svc)
+    report = [t for t in sender.sent if "지지 테스트 중" in t]
+    assert len(report) == 1
+    assert "매도 5" in report[0]
+    # flush — 누적이 DB에 반영
+    assert svc._watch_store.load()[0].cum_sell == Decimal(5)
+
+    # 무효화: 초기 봉(재시작 오염)을 소진한 뒤 깨끗한 이탈 마감 2연속
+    svc.on_event(AGG, watch_agg("65300", qty="2", t_ms=TF_15M_MS + 1000))  # 버킷0 마감(오염)
+    svc.on_event(AGG, watch_agg("65300", qty="2", t_ms=TF_15M_MS * 2 + 1000))  # 버킷1 마감 — 이탈 1/2
+    assert svc.watch.watches()[0].breach_closes == 1
+    svc.on_event(AGG, watch_agg("65300", qty="2", t_ms=TF_15M_MS * 3 + 1000))  # 버킷2 마감 — 확정
+    final = [t for t in sender.sent if "지지 이탈 확정" in t]
+    assert len(final) == 1
+    assert svc.watch.watches() == []  # 관측 종료
+    # 발송 보장 — 선기록 유지, 발송 확인 시 행 삭제 (§9.4)
+    assert svc._watch_store.load()[0].final_text == final[0]
+    sender.on_sent_callbacks[sender.sent.index(final[0])]()
+    assert svc._watch_store.count() == 0
+
+    svc._store.close()
+
+
+def test_watch_counting_continues_during_epoch_gap(tmp_path):
+    mono, wall = _Clock(0.0), _Clock(1_000_000.0)
+    svc, sender = make_watch_service(tmp_path, mono, wall)
+    start_feed(svc)
+    svc._handle_watch_command(Decimal(65600), Decimal(65600), "65600")
+    svc.on_event(AGG, watch_agg("65700", t_ms=1000))
+    svc.on_event(AGG, watch_agg("65650", t_ms=2000))
+
+    svc.on_disconnected()  # epoch 종료 — 디텍터는 리셋, W는 지속 (§5.4 v1.13)
+    assert not svc.tracker.epoch_active
+    svc.on_event(AGG, watch_agg("65500", qty="7", t_ms=3000))  # aggTrade만 재개된 상황
+    assert svc.watch.watches()[0].cum_sell == Decimal(7)  # epoch 비활성에도 계측 (65650은 > hi라 애초 미계측)
+
+    # 공백 걸친 봉은 이탈 마감이어도 카운트 리셋 (판정 제외)
+    svc.on_event(AGG, watch_agg("65300", t_ms=TF_15M_MS + 1000))  # 오염 봉 마감
+    assert svc.watch.watches()[0].breach_closes == 0
+
+    # 공백 플래그가 다음 리포트에 표기
+    mono.now = 601.0
+    _tick(svc)
+    report = [t for t in sender.sent if "지지 테스트 중" in t]
+    assert "관측 공백 포함" in report[0]
+
+    svc._store.close()
+
+
+def test_watch_restore_via_service_startup(tmp_path):
+    mono, wall = _Clock(0.0), _Clock(1_000_000.0)
+    svc1, _ = make_watch_service(tmp_path, mono, wall)
+    start_feed(svc1)
+    svc1._handle_watch_command(Decimal(65600), Decimal(65600), "65600")
+    svc1.on_event(AGG, watch_agg("65700", t_ms=1000))
+    svc1.on_event(AGG, watch_agg("65600", qty="9", t_ms=2000))
+    _tick(svc1)  # flush (첫 접촉으로 flush_pending)
+    svc1._store.close()
+    svc1._watch_store.close()
+    svc1._kv.close()
+
+    svc2, _ = make_watch_service(tmp_path, _Clock(0.0), _Clock(2_000_000.0))
+    data = svc2.watch.watches()[0]
+    assert data.cum_sell == Decimal(9)  # 누적 보존 (§12.2)
+    assert data.gap_flag is True  # 관측 공백 표기
+    assert data.in_band is False  # 회차 단절
+    svc2._store.close()
+
+
+def test_watch_unsent_final_resent_on_startup(tmp_path):
+    from order_monitor.persistence.watch_levels import WatchStore
+
+    mono, wall = _Clock(0.0), _Clock(1_000_000.0)
+    svc1, _ = make_watch_service(tmp_path, mono, wall)
+    start_feed(svc1)
+    svc1._handle_watch_command(Decimal(65600), Decimal(65600), "65600")
+    _tick(svc1)
+    # 무효화 확정 후 발송 확인 전 크래시 시나리오 — final_text만 남긴다
+    svc1._watch_store.mark_final(Decimal(65600), Decimal(65600), "support_broken", "미발송 최종 리포트")
+    svc1._store.close()
+    svc1._watch_store.close()
+    svc1._kv.close()
+
+    svc2, _ = make_watch_service(tmp_path, _Clock(0.0), _Clock(2_000_000.0))
+    # startup은 dispatcher._sender 치환 전에 재전송을 큐잉 — 실제 TelegramSender 큐로 확인
+    assert svc2.telegram.pending() == 1
+    assert svc2.watch.watches() == []  # 무효화된 주시는 복원 대상 아님
+    svc2._store.close()
+
+
+def test_watch_unwatch_command_final_report(tmp_path):
+    mono, wall = _Clock(0.0), _Clock(1_000_000.0)
+    svc, sender = make_watch_service(tmp_path, mono, wall)
+    start_feed(svc)
+    svc._handle_watch_command(Decimal(65600), Decimal(65600), "65600")
+    response = svc._handle_unwatch_command(Decimal(65600), Decimal(65600), "65600")
+    assert "주시 해소" in response
+    assert any("주시 해소 (수동)" in text for text in sender.sent)
+    assert svc._watch_store.count() == 0
+    # 미등록 해소는 오류 안내
+    assert "주시 중이 아닙니다" in svc._handle_unwatch_command(Decimal(1), Decimal(2), "1-2")
+    svc._store.close()

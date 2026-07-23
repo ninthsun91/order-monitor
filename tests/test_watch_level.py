@@ -68,7 +68,7 @@ class TestRegistration:
     def test_duplicate_rejected(self):
         obs = make_observer()
         register_65600(obs)
-        assert obs.register(Decimal(65600), Decimal(65600), "65600") is False
+        assert obs.register(Decimal(65600), Decimal(65600), "65600") is None
 
     def test_unregister_returns_manual_final(self):
         obs = make_observer()

@@ -18,6 +18,13 @@ D4에도 전달한다. 구 `d5.reset()` 선행 순서 제약은 케이스 2 폐�
 벽 소멸(diff tombstone/하한 미만) 시 배선 순서가 판정 정합성을 가른다:
 episode REMOVED 종료 → D3 확정 판정 (D1 등록이 아직 살아있어야 함) →
 D1 REMOVED 판정 → D1 이벤트를 D3 등록 해제 + D5 소멸 평가로 라우팅.
+
+**W 주시 관측기 (PRD §8 W v1.13)**: 디텍터 체인과 독립 병행 경로 — aggTrade
+경로에서 봉 마감 판정(먼저) → 계측을 **epoch 게이트 밖**에서 수행한다 (계측은
+상태 적재, §5.4 v1.13). EpochEnded는 W를 리셋하지 않고 봉 오염 + 공백 플래그만.
+주기 리포트는 staleness 틱의 동기 `watch.on_tick()`(replay 결정성 — D2 패턴),
+주시 등록/해소는 텔레그램 수신 루프(§9.5, `_telegram_commands_loop`)가 콜백으로
+중개하고 등록/flush/무효화 선기록은 `watch_levels` 테이블에 영속된다 (§12.2).
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from pathlib import Path
 
 from order_monitor.alerting.dispatcher import AlertDispatcher
 from order_monitor.alerting.telegram import TelegramSender
+from order_monitor.alerting.telegram_commands import TelegramReceiver
 from order_monitor.alerting.wall_report import format_wall_report
 from order_monitor.config import AppConfig
 from order_monitor.detectors.contact import (
@@ -45,6 +53,7 @@ from order_monitor.detectors.d2 import D2Detector
 from order_monitor.detectors.d3 import D3Detector
 from order_monitor.detectors.d4 import D4Detector
 from order_monitor.detectors.d5 import D5Detector
+from order_monitor.detectors.watch_level import WatchLevelObserver
 from order_monitor.ingestion.baseline_bootstrap import BootstrapError, fetch_minute_volumes
 from order_monitor.ingestion.events import (
     AggTradeEvent,
@@ -63,7 +72,10 @@ from order_monitor.ingestion.health import (
 )
 from order_monitor.ingestion.ws_client import BinanceWSClient
 from order_monitor.persistence.alerts_outbox import AlertsOutboxStore
+from order_monitor.persistence.kv import KVStore
 from order_monitor.persistence.walls import WallStore
+from order_monitor.persistence.watch_levels import WatchStore
+from order_monitor.state.candles import CandleAssembler
 from order_monitor.state.level_tracker import LevelTracker
 from order_monitor.state.order_book import OrderBook
 from order_monitor.state.trade_window import TradeWindow
@@ -171,6 +183,19 @@ class MonitorService:
             cum_traded_lookup=self._cum_traded_at_level,
             monotonic=monotonic,
         )
+        # W 주시 관측기 (PRD §8 W v1.13) — 디텍터 체인과 독립 병행 경로.
+        # 계측·회차는 epoch 게이트 밖(상태 적재), 봉 판정만 gap 오염으로 보류
+        self.candles = CandleAssembler(config.watch.confirm_timeframe)
+        self.watch = WatchLevelObserver(
+            contact_band_pct=Decimal(str(config.watch.contact_band_pct)),
+            confirm_timeframe=config.watch.confirm_timeframe,
+            confirm_closes=config.watch.confirm_closes,
+            invalidate_buffer_pct=Decimal(str(config.watch.invalidate_buffer_pct)),
+            report_interval_seconds=config.watch.report_interval_seconds,
+            clock=clock,
+            monotonic=monotonic,
+        )
+        self._telegram_token = telegram_token
         self.telegram = TelegramSender(telegram_token, config.telegram.chat_id)
         self._outbox: AlertsOutboxStore | None = None
         self.dispatcher = AlertDispatcher(
@@ -183,6 +208,8 @@ class MonitorService:
             wall_lookup=self.wall_registry.walls,
         )
         self._store: WallStore | None = None
+        self._watch_store: WatchStore | None = None
+        self._kv: KVStore | None = None
 
     def _cum_traded_at_level(self, side, price: Decimal) -> Decimal:
         # 창 진입 이력 없는 레벨은 관측된 체결이 없다는 뜻 — 0. 벽 레벨은 창
@@ -211,6 +238,41 @@ class MonitorService:
         if unsent:
             logger.info("unsent alerts requeued from outbox", extra={"count": len(unsent)})
 
+        # W 주시 레벨 복원 (PRD §12.2 — "상태 미복원" 예외 ②) + kv (§9.5 offset)
+        self._watch_store = WatchStore(self._db_path)
+        self._kv = KVStore(self._db_path)
+        self.dispatcher.set_watch_store(self._watch_store)
+        unsent_finals = 0
+        restored_watches = 0
+        for row in self._watch_store.load():
+            if row.final_text is not None:
+                # 무효화 확정 후 발송 확인 전 크래시 — 최종 리포트 재전송 (§9.4)
+                store = self._watch_store
+                self.telegram.enqueue(
+                    row.final_text,
+                    on_sent=lambda lo=row.lo, hi=row.hi: store.delete(lo, hi),
+                )
+                unsent_finals += 1
+                continue
+            self.watch.restore(
+                lo=row.lo,
+                hi=row.hi,
+                literal=row.literal,
+                registered_at=row.registered_at,
+                role=row.role,
+                episode_num=row.episode_num,
+                first_contact_at=row.first_contact_at,
+                cum_buy=row.cum_buy,
+                cum_sell=row.cum_sell,
+                excursion_low=row.excursion_low,
+                excursion_high=row.excursion_high,
+            )
+            restored_watches += 1
+        logger.info(
+            "watch levels restored",
+            extra={"count": restored_watches, "unsent_finals": unsent_finals},
+        )
+
     async def run(self) -> None:
         self.startup()
         await self._bootstrap_baseline()
@@ -221,12 +283,17 @@ class MonitorService:
                 group.create_task(self._prune_loop())
                 group.create_task(self._wall_report_loop())
                 group.create_task(self._heartbeat_loop())
+                group.create_task(self._telegram_commands_loop())
                 group.create_task(self.telegram.run())
         finally:
             if self._store is not None:
                 self._store.close()
             if self._outbox is not None:
                 self._outbox.close()
+            if self._watch_store is not None:
+                self._watch_store.close()
+            if self._kv is not None:
+                self._kv.close()
 
     async def _bootstrap_baseline(self) -> None:
         """D2 기준선 워밍업 (PRD §8 D2 v1.3) — 실패해도 기동은 계속, D2만 보류."""
@@ -280,6 +347,15 @@ class MonitorService:
             self.trade_window.add(event)
             self.level_tracker.record_trade(event)
             self.volume_baseline.add(event.exchange_time_ms, event.qty)
+            # W 주시 관측 (PRD §8 W v1.13) — epoch 게이트 밖: 계측은 상태 적재로
+            # 분류되어 aggTrade가 살아있는 한 계속 (§5.4). 봉 마감 판정을 먼저
+            # 소비 — 새 버킷의 첫 체결은 다음 봉 소속 (candles docstring 계약)
+            closed_candle = self.candles.on_trade(event)
+            if closed_candle is not None:
+                for watch_event in self.watch.on_candle_close(closed_candle):
+                    self._emit(watch_event)
+            for watch_event in self.watch.on_trade(event):
+                self._emit(watch_event)
             # 판정은 epoch 활성 중에만 — 상태 적재는 위에서 이미 수행 (PRD §5.4)
             if self.tracker.epoch_active:
                 self._handle_episode_ends(self.contact.on_trade(event))  # 체결가 관통
@@ -342,6 +418,12 @@ class MonitorService:
         while True:
             await asyncio.sleep(STALENESS_CHECK_INTERVAL_SECONDS)
             self._handle_notices(self.tracker.check_staleness())
+            # W 주기 리포트 (PRD §8 W) — epoch 게이트 밖 (공백 중에도 계측·보고는
+            # 계속, 공백 플래그로 표기). 별도 asyncio 태스크가 아닌 동기 on_tick —
+            # replay 결정성 (D2 on_tick과 동일 패턴, 계획 결정)
+            for watch_event in self.watch.on_tick():
+                self._emit(watch_event)
+            self._flush_watches()
             # D1 지속 타이머 게이트 — diff 이벤트가 안 와도 PERSIST 경과로 발화 (PRD §8 D1)
             if self.tracker.epoch_active:
                 for d1_event in self.d1.evaluate(self.wall_registry.walls()):
@@ -381,6 +463,61 @@ class MonitorService:
             size_threshold=Decimal(str(self._config.thresholds.size_threshold_btc)),
             now_epoch_seconds=self._clock(),
         )
+
+    def _flush_watches(self) -> None:
+        """W 누적 카운터 flush (PRD §12.2) — 회차 경계/리포트/등록 등 상태 전이
+        시에만 (`take_flush_pending`). 리포트 발송 틱과 같은 주기라 비용 무시 가능."""
+        if self._watch_store is None or not self.watch.take_flush_pending():
+            return
+        flushed_at = self._clock()
+        for data in self.watch.watches():
+            self._watch_store.upsert(data, flushed_at=flushed_at)
+
+    # ── 텔레그램 수신 명령 (PRD §9.5 v1.13) ─────────────────────
+
+    async def _telegram_commands_loop(self) -> None:
+        """getUpdates 수신 — 파이프라인과 격리된 별도 태스크. 수신기 자체가
+        네트워크 오류를 백오프로 삼키지만, 핸들러 예외(스토어 등)까지 파이프라인을
+        죽이지 않도록 여기서 한 겹 더 격리한다 (부분 실패 격리, §11.1)."""
+        assert self._kv is not None
+        kv = self._kv
+        receiver = TelegramReceiver(
+            self._telegram_token,
+            self._config.telegram.chat_id,
+            on_watch=self._handle_watch_command,
+            on_unwatch=self._handle_unwatch_command,
+            on_watching=lambda: self.dispatcher.format_watch_status(self.watch.watches()),
+            send=self.telegram.enqueue,
+            kv_get=kv.get,
+            kv_set=lambda key, value: kv.set(key, value, updated_at=self._clock()),
+        )
+        while True:
+            try:
+                await receiver.run()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("telegram receiver crashed — restarting after backoff")
+                await asyncio.sleep(60)
+
+    def _handle_watch_command(self, lo: Decimal, hi: Decimal, arg: str) -> str:
+        data = self.watch.register(lo, hi, arg)
+        if data is None:
+            return f"이미 주시 중입니다: {arg}"
+        assert self._watch_store is not None
+        self._watch_store.upsert(data, flushed_at=self._clock())  # 등록 즉시 영속 (§12.2)
+        logger.info("watch registered", extra={"lo": str(lo), "hi": str(hi), "literal": arg})
+        return f"👁 주시 등록: {arg}\n접촉 시 통지, 이후 활동 시 주기 리포트. 해소: /unwatch {arg}"
+
+    def _handle_unwatch_command(self, lo: Decimal, hi: Decimal, arg: str) -> str:
+        final = self.watch.unregister(lo, hi)
+        if final is None:
+            return f"주시 중이 아닙니다: {arg} (/watching 으로 확인)"
+        assert self._watch_store is not None
+        self._watch_store.delete(lo, hi)
+        self._emit(final)  # 수동 해소 최종 리포트 — 로그 + 발송 (§8 W)
+        logger.info("watch unregistered", extra={"lo": str(lo), "hi": str(hi)})
+        return f"주시 해소: {arg}"
 
     async def _heartbeat_loop(self) -> None:
         """프로세스 하트비트 (PRD §11.1) — 이벤트 루프 생존 신호.
@@ -476,6 +613,10 @@ class MonitorService:
                     self._emit(d4_event)  # DEFENSE_INTERRUPTED — 로그만 (dispatcher 미발송)
                 for d5_event in self.d5.reset():
                     self._emit(d5_event)
+                # W는 리셋하지 않는다 (PRD §5.4 v1.13 — 계측은 적재로서 지속).
+                # 공백 낀 봉 오염 + 리포트 공백 플래그만
+                self.candles.mark_gap()
+                self.watch.on_epoch_end()
                 logger.warning(
                     "epoch ended",
                     extra={"epoch_id": notice.epoch_id, "reason": notice.reason},

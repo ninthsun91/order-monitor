@@ -132,20 +132,21 @@ class WatchLevelObserver:
 
     # ---- 등록/해소/복원 -------------------------------------------------
 
-    def register(self, lo: Decimal, hi: Decimal, literal: str) -> bool:
-        """신규 등록. 이미 같은 구역이 있으면 False."""
+    def register(self, lo: Decimal, hi: Decimal, literal: str) -> WatchReportData | None:
+        """신규 등록 — 등록 즉시 영속(§12.2)용 스냅샷 반환. 중복 구역이면 None."""
         key = (lo, hi)
         if key in self._watches:
-            return False
-        self._watches[key] = _Watch(
+            return None
+        watch = _Watch(
             lo=lo,
             hi=hi,
             literal=literal,
             registered_at=self._clock(),
             last_report_monotonic=self._monotonic(),
         )
+        self._watches[key] = watch
         self._flush_pending = True
-        return True
+        return self._snapshot(watch)
 
     def unregister(self, lo: Decimal, hi: Decimal) -> WatchFinal | None:
         """수동 해소 — 최종 리포트 이벤트 반환 (§8 W 종료 사유 병기)."""
