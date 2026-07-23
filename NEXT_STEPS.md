@@ -4,30 +4,7 @@
 
 작업 규칙 (CLAUDE.md): 스펙 변경은 **문서(PRD·결정 기록) 갱신 → 사용자 확인 → 코드** 순서. 커밋은 의미 단위마다, push는 명시 요청 시에만.
 
-(2026-07-23 완료되어 삭제된 절: D4 재구현 — PRD §8 D4 v1.12 기준 구현 완료, 관측 보완 2건 — 등록/소멸 궤적 로깅 + D2 요약 근접 벽 컨텍스트. DEVELOPMENT_PLAN M6 체크박스·검증 기록·결정 기록 2026-07-23 참고.)
-
----
-
-## 0. 운영 — VPS 배포 대기 (코드는 완성, 배포만 남음)
-
-로컬 main에는 VPS 미반영 변경이 쌓여 있다:
-
-- **D1 APPEARED 스트릭당 1회 억제** (PRD §8 D1 v1.8, §12.1) — walls DB에 `appeared_alerted_since` 컬럼 자동 마이그레이션 포함 (`persistence/walls.py`가 기동 시 `ALTER TABLE`)
-- **D5 케이스 1 래치화** (PRD §8 D5 v1.9) — 확정 후 무상한 진행 알림 + `CONFIRMED_CLOSED`
-- **D4 재구현 — 레벨 흡수 방어 디텍터** (PRD §8 D4 v1.12, 2026-07-23) — 준임계 벽(100~1000 BTC) 반복 방어 감지·통지, 케이스 2 폐지(D5 케이스 1 전용화), 관측 로그 2종
-- 관측 보완 2건 (벽 등록/소멸 궤적 로그, D2 요약 근접 벽 컨텍스트), VPS 추출 스크립트 2종, 테스트 정리
-
-**배포 절차**: VPS에서 `git pull` → **config.yaml 수동 수정 (필수!)** → `systemctl restart order-monitor`. DB 마이그레이션은 자동.
-
-**⚠ config.yaml 동시 수정 (v1.12 키 교체 + v1.13 watch 섹션 — 미수정 시 기동 실패, 엄격 스키마)**:
-- `thresholds`에서 삭제: `iceberg_margin_btc`, `iceberg_min_trades`, `realize_pct_above`
-- `thresholds`에 추가: `absorb_multiple: 2.0`, `absorb_progress_step: 0.5`, `absorb_min_events: 5` (`refill_window_ms: 500`은 기존 유지)
-- `alerts`에 추가: `send_d4: true`
-- **(v1.13, M7)** 최상위 `watch:` 섹션 추가 — 5키 전부 (`contact_band_pct`·`confirm_timeframe`·`confirm_closes`·`invalidate_buffer_pct`·`report_interval_seconds`)
-- **(v1.14)** `telegram`에 `command_chat_ids` 추가 — 명령 수신 허용 목록 (예: `["-1003954363679"]`, DM 허용 시 개인 chat id 추가)
-- 대조 기준: [config.example.yaml](config.example.yaml) (PRD §10과 일치)
-
-**배포 후 검증 포인트**: ① 재시작 직후 기존 벽들의 D1 APPEARED 재발화가 **텔레그램에 안 오는지** (로그에는 남음 — 정상) ② 다음 케이스 1 확정 후 80%+ 진행 알림이 계속 오는지 ③ 정시 호가벽 리포트 정상 수신 ④ `wall registered` 로그·`d4 absorb event`/`d4 streak summary` 관측 로그가 쌓이는지 ⑤ 준임계 벽 방어 시 D4 `DEFENSE_DETECTED` 텔레그램 수신 (07-17 62.8k류 재현 시 자연 확인) ⑥ D2 요약에 근접 벽 줄 동봉 확인.
+(2026-07-23 완료되어 삭제된 절: D4 재구현 — PRD §8 D4 v1.12 기준 구현 완료, 관측 보완 2건 — 등록/소멸 궤적 로깅 + D2 요약 근접 벽 컨텍스트. DEVELOPMENT_PLAN M6 체크박스·검증 기록·결정 기록 2026-07-23 참고. §0 "VPS 배포 대기" 절은 배포가 수시 진행되는 일상 운영이 되어 상시 트래킹에서 제외 — 배포 시 config.yaml 대조 기준은 [config.example.yaml](config.example.yaml), 엄격 스키마라 키 불일치 시 기동 실패.)
 
 ---
 
@@ -50,13 +27,13 @@
 
 ## 2. M7 — W 주시 레벨 관측기 + 텔레그램 수신 명령 (구현 완료, 실전 확인 잔여)
 
-**참조**: PRD v1.13 (§8 W, §9.5, §12.2) + DEVELOPMENT_PLAN "M7" 절(체크박스 전부 완료, 검증 기록 2026-07-23 — pytest 406건). 잔여 = 완료 기준의 실전 사이클 1건(`/watch` 등록 → 주기 리포트 → 해소) 확인 — 배포(§0) 후 자연 진행. **배포 시 VPS config.yaml에 `watch` 섹션 5키 추가 필수** (§0의 v1.12 키 교체와 함께 — 로컬 config.yaml은 반영 완료). 실토큰 로컬 수신 테스트는 getUpdates 단일 소비자 제약으로 VPS 정지 후 진행 (PRD §9.5). DB 테이블(`watch_levels`·`kv`)은 기동 시 자동 생성 — 마이그레이션 불필요.
+**참조**: PRD v1.13 (§8 W, §9.5, §12.2) + DEVELOPMENT_PLAN "M7" 절(체크박스 전부 완료, 검증 기록 2026-07-23 — pytest 406건). 잔여 = 완료 기준의 실전 사이클 1건(`/watch` 등록 → 주기 리포트 → 해소) 확인 — 배포 후 자연 진행. **배포 시 VPS config.yaml에 `watch` 섹션 5키 + `telegram.command_chat_ids` 추가 필수** (로컬 config.yaml은 반영 완료, 대조 기준 config.example.yaml). 실토큰 로컬 수신 테스트는 getUpdates 단일 소비자 제약으로 VPS 정지 후 진행 (PRD §9.5). DB 테이블(`watch_levels`·`kv`)은 기동 시 자동 생성 — 마이그레이션 불필요.
 
 ---
 
 ## 3. 결정 대기 / 비작업 메모
 
 - **열린 질문 없음** — 오픈 퀘스천 #1만 M6 재검토 예정, #2는 v1.11로 종결 (DEVELOPMENT_PLAN 오픈 퀘스천 트래킹 표)
-- D5 케이스 1 래치·D1 스트릭 억제·**D4 방어 감지**의 **실전 검증**은 배포(§0) 후 다음 대형/준임계 벽 이벤트에서 자연 확인 — 별도 작업 아님
+- D5 케이스 1 래치·D1 스트릭 억제·**D4 방어 감지**의 **실전 검증**은 배포 후 다음 대형/준임계 벽 이벤트에서 자연 확인 — 별도 작업 아님
 - ② 은닉 리필의 1틱 이월 보정(v1.12)·수용 오차는 배포 후 `d4 absorb event` 로그 리뷰로 실측 검증 (M6 튜닝 루프에 포함)
 - 재시작 시 인텐트·누적 리셋은 **의도된 수용 한계** (v1.9 사용자 확정) — 복원 로직을 추가하지 말 것 (PRD §12 원칙, 예외는 wall_registry(§12.1)와 W 주시 레벨(§12.2, v1.13)의 둘뿐). D4 스트릭도 동일 — epoch/재시작 시 재개시가 스펙 (v1.12)
