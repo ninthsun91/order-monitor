@@ -48,7 +48,8 @@ watch:                           # PRD v1.13 — W 주시 레벨 관측기 (§8 
   report_interval_seconds: 600   # 주기 리포트 간격 (5~15분 권장 대역)
 
 telegram:
-  chat_id: "..."                 # 토큰은 TELEGRAM_BOT_TOKEN env로
+  chat_id: "..."                 # 알림 발송 대상 (단일). 토큰은 TELEGRAM_BOT_TOKEN env로
+  command_chat_ids: ["..."]      # v1.14 — 명령 수신 허용 chat 목록 (채널/그룹/DM id, 최소 1개. PRD §9.5)
 
 watchdog:
   stale_seconds: 30              # depth·diff 스트림 staleness 임계 (PRD §5.4 v1.2 — 스트림별 감시)

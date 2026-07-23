@@ -52,7 +52,8 @@ class AlertsConfig:
 
 @dataclasses.dataclass(frozen=True)
 class TelegramConfig:
-    chat_id: str
+    chat_id: str  # 알림 발송 대상 (단일)
+    command_chat_ids: list[str]  # v1.14 — 명령 수신 허용 목록 (§9.5, 발송 대상과 분리)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -93,6 +94,14 @@ _TOP_LEVEL_SECTION_FIELDS = ("thresholds", "alerts", "wall_tracker", "watch", "t
 
 
 def _check_value_type(section: str, name: str, value: object, expected_type: type) -> object:
+    if typing.get_origin(expected_type) is list:
+        (item_type,) = typing.get_args(expected_type)
+        if not isinstance(value, list):
+            raise ConfigError(f"'{section}.{name}' must be a list, got {type(value).__name__}")
+        return [
+            _check_value_type(section, f"{name}[{i}]", item, item_type)
+            for i, item in enumerate(value)
+        ]
     if expected_type is float:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ConfigError(f"'{section}.{name}' must be a number, got {type(value).__name__}")
@@ -206,6 +215,10 @@ def _validate_invariants(config: AppConfig) -> None:
         raise ConfigError(
             f"'watch.report_interval_seconds' must be >= 60, got {config.watch.report_interval_seconds}"
         )
+
+    # v1.14 — 빈 목록은 수신 기능 자체를 무의미하게 만드는 오설정
+    if not config.telegram.command_chat_ids:
+        raise ConfigError("'telegram.command_chat_ids' must contain at least one chat id")
 
 
 def load_config(path: str | Path) -> AppConfig:

@@ -483,11 +483,12 @@ class MonitorService:
         kv = self._kv
         receiver = TelegramReceiver(
             self._telegram_token,
-            self._config.telegram.chat_id,
+            self._config.telegram.command_chat_ids,
             on_watch=self._handle_watch_command,
             on_unwatch=self._handle_unwatch_command,
             on_watching=lambda: self.dispatcher.format_watch_status(self.watch.watches()),
-            send=self.telegram.enqueue,
+            # 응답은 발신 chat으로 (v1.14 — 알림 발송 대상과 분리, PRD §9.5)
+            send=lambda text, chat_id: self.telegram.enqueue(text, chat_id=chat_id),
             kv_get=kv.get,
             kv_set=lambda key, value: kv.set(key, value, updated_at=self._clock()),
         )

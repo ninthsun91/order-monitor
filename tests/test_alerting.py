@@ -766,3 +766,14 @@ def test_watch_status_format():
     )
     assert "- 65,600: 지지 테스트 3회차 · 누적 매도 3,120 / 매수 1,870 BTC" in text
     assert "- 64,900~66,000: 대기" in text
+
+
+def test_sender_chat_id_override_routes_response():
+    # v1.14 — 명령 응답의 발신 chat 라우팅. 기본값(미지정)은 기존 알림 대상 유지
+    post = FakePost([(200, "ok"), (200, "ok")])
+    sender = make_sender(post)
+    sender.enqueue("알림", None)
+    sender.enqueue("응답", chat_id="777001")
+    run_sender_until(sender, lambda: len(post.calls) >= 2)
+    assert post.calls[0][1]["chat_id"] != "777001"  # 기본 — 생성자 chat_id
+    assert post.calls[1][1]["chat_id"] == "777001"  # 오버라이드

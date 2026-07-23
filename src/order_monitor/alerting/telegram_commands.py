@@ -1,4 +1,4 @@
-"""텔레그램 수신 명령 루프 (PRD §9.5 v1.13) — W 주시 레벨의 런타임 조작.
+"""텔레그램 수신 명령 루프 (PRD §9.5 v1.14) — W 주시 레벨의 런타임 조작.
 
 주시 등록/해소는 재시작 없이 이루어져야 한다 — 재시작은 epoch 종료(활성
 인텐트 INTERRUPTED, trade_window·D4 스트릭 리셋)를 수반하므로. 발송 전용이던
@@ -7,9 +7,13 @@
 - **격리**: 발송기와 동일한 부분 실패 격리 (§11.1) — 수신 장애·API 오류가
   파이프라인을 막지 않고, 지수 백오프(1→60s)로 재시도한다. 409 Conflict는
   단일 소비자 위반(로컬+VPS 동시 실행) 안내 로그를 남긴다.
-- **인증**: `message.chat.id` == config `telegram.chat_id`인 메시지만 처리.
-  불일치는 무시(구조화 로그만) — 봇은 공개 발견 가능하므로 이것이 유일한
-  접근 통제다.
+- **수신 대상 (v1.14)**: `message` + `channel_post` — 채널 게시물은 Bot API에서
+  별도 업데이트 타입이라 `message`만 읽으면 채널 명령이 무기록 스킵된다
+  (실배포 검증 발견, PRD v1.14 개정 이력).
+- **인증 (v1.14 복수화)**: 발신 `chat.id` ∈ `telegram.command_chat_ids` 목록.
+  불일치는 무시(구조화 로그만) — 봇은 공개 발견 가능하므로 이것이 접근 통제다
+  (채널은 게시 권한자만 글 작성 가능 — 이중 통제). 발송 대상(`telegram.chat_id`)
+  과 분리되며, 명령 응답은 발신 chat으로 라우팅한다.
 - **offset 영속**: 처리한 `update_id`를 KVStore(§12.2)에 즉시 저장 — 미저장
   시 재시작에 이전 명령이 재실행된다 (멱등이라 피해는 제한적, 응답 중복 방지).
 - **문법**: `/watch <price>` · `/watch <lo>-<hi>` · `/unwatch <동일 문법>` ·
@@ -67,12 +71,12 @@ class TelegramReceiver:
     def __init__(
         self,
         token: str,
-        chat_id: str,
+        command_chat_ids: list[str],
         *,
         on_watch: Callable[[Decimal, Decimal, str], str],
         on_unwatch: Callable[[Decimal, Decimal, str], str],
         on_watching: Callable[[], str],
-        send: Callable[[str], None],  # 응답 발송 — TelegramSender.enqueue
+        send: Callable[[str, str], None],  # 응답 발송 (text, 발신 chat_id) — v1.14 라우팅
         kv_get: Callable[[str], str | None],
         kv_set: Callable[[str, str], None],
         base_url: str = "https://api.telegram.org",
@@ -81,7 +85,7 @@ class TelegramReceiver:
     ) -> None:
         self._token = token
         self._url = f"{base_url}/bot{token}/getUpdates"
-        self._chat_id = chat_id
+        self._allowed_chat_ids = frozenset(command_chat_ids)
         self._on_watch = on_watch
         self._on_unwatch = on_unwatch
         self._on_watching = on_watching
@@ -135,20 +139,21 @@ class TelegramReceiver:
     # ---- 내부 -----------------------------------------------------------
 
     def _process_update(self, update: dict) -> None:
-        message = update.get("message") or {}
-        chat_id = (message.get("chat") or {}).get("id")
+        # 채널 게시는 message가 아닌 channel_post로 도착 (v1.14 — §9.5)
+        message = update.get("message") or update.get("channel_post") or {}
+        chat_id = str((message.get("chat") or {}).get("id"))
         text = message.get("text")
         if not isinstance(text, str):
             return
-        if str(chat_id) != self._chat_id:
+        if chat_id not in self._allowed_chat_ids:
             logger.warning(
                 "telegram command from unauthorized chat ignored",
-                extra={"chat_id": str(chat_id)},
+                extra={"chat_id": chat_id},
             )
             return
         response = self._handle_text(text)
         if response is not None:
-            self._send(response)
+            self._send(response, chat_id)  # 응답은 발신 chat으로 (v1.14)
 
     def _handle_text(self, text: str) -> str | None:
         parts = text.strip().split(maxsplit=1)

@@ -267,3 +267,44 @@ def test_vol_multiplier_must_exceed_one(tmp_path):
 
     with pytest.raises(ConfigError, match="vol_multiplier' must be > 1"):
         load_config(bad_config)
+
+
+def test_telegram_command_chat_ids_loaded():
+    # PRD §10 v1.14 — 명령 수신 허용 목록 (발송 대상과 분리)
+    config = load_config(EXAMPLE_CONFIG)
+    assert config.telegram.command_chat_ids == ["..."]
+
+
+def test_telegram_command_chat_ids_empty_raises(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace('command_chat_ids: ["..."]', "command_chat_ids: []")
+    )
+
+    with pytest.raises(ConfigError, match="command_chat_ids' must contain at least one"):
+        load_config(bad_config)
+
+
+def test_telegram_command_chat_ids_non_string_element_raises(tmp_path):
+    # YAML에서 따옴표 없는 음수 id는 int로 파싱됨 — 문자열 강제 (기존 chat_id 관례와 동일 함정)
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace(
+            'command_chat_ids: ["..."]', "command_chat_ids: [-1003954363679]"
+        )
+    )
+
+    with pytest.raises(ConfigError, match=r"command_chat_ids\[0\]' must be a string"):
+        load_config(bad_config)
+
+
+def test_telegram_command_chat_ids_not_list_raises(tmp_path):
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text(
+        EXAMPLE_CONFIG.read_text().replace(
+            'command_chat_ids: ["..."]', 'command_chat_ids: "..."'
+        )
+    )
+
+    with pytest.raises(ConfigError, match="command_chat_ids' must be a list"):
+        load_config(bad_config)

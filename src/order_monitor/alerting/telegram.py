@@ -48,11 +48,20 @@ class TelegramSender:
         self._monotonic = monotonic
         self._sleep = sleep
         self._post = post or self._default_post
-        self._queue: asyncio.Queue[tuple[str, Callable[[], None] | None]] = asyncio.Queue()
+        self._queue: asyncio.Queue[tuple[str, Callable[[], None] | None, str | None]] = (
+            asyncio.Queue()
+        )
         self._last_send_at: float | None = None
 
-    def enqueue(self, text: str, on_sent: Callable[[], None] | None = None) -> None:
-        self._queue.put_nowait((text, on_sent))
+    def enqueue(
+        self,
+        text: str,
+        on_sent: Callable[[], None] | None = None,
+        chat_id: str | None = None,
+    ) -> None:
+        """chat_id 미지정 시 생성자 chat_id(알림 발송 대상)로 — 기존 경로 무변경.
+        지정 시 해당 chat으로 발송 (v1.14 — 명령 응답의 발신 chat 라우팅, PRD §9.5)."""
+        self._queue.put_nowait((text, on_sent, chat_id))
 
     def pending(self) -> int:
         return self._queue.qsize()
@@ -60,9 +69,9 @@ class TelegramSender:
     async def run(self) -> None:
         """발송 워커 — 취소로만 종료된다."""
         while True:
-            text, on_sent = await self._queue.get()
+            text, on_sent, chat_id = await self._queue.get()
             await self._throttle()
-            await self._send_with_retry(text, on_sent)
+            await self._send_with_retry(text, on_sent, chat_id)
 
     async def _throttle(self) -> None:
         if self._last_send_at is None:
@@ -71,13 +80,18 @@ class TelegramSender:
         if wait > 0:
             await self._sleep(wait)
 
-    async def _send_with_retry(self, text: str, on_sent: Callable[[], None] | None = None) -> None:
+    async def _send_with_retry(
+        self,
+        text: str,
+        on_sent: Callable[[], None] | None = None,
+        chat_id: str | None = None,
+    ) -> None:
         backoff = INITIAL_RETRY_BACKOFF_SECONDS
         for attempt in range(1, MAX_ATTEMPTS + 1):
             self._last_send_at = self._monotonic()
             try:
                 status, body = await self._post(
-                    self._url, {"chat_id": self._chat_id, "text": text}
+                    self._url, {"chat_id": chat_id or self._chat_id, "text": text}
                 )
                 if status == 200:
                     logger.info("telegram alert sent", extra={"attempt": attempt})
