@@ -2,9 +2,11 @@
 
 디텍터 판정은 epoch 활성 중에만 수행하고(PRD §5.4 — 상태 적재는 계속),
 EpochEnded에서 D1 활성/후보·접촉 episode·D3 등록·D5 활성 인텐트를
-리셋한다. D3는 알림 없이 로그 전용 (PRD §9.1 — DB events 테이블은 M6).
+리셋한다. D3는 알림 없이 로그·DB 기록 전용 (PRD §9.1).
 D5 확정 알림은 SQLite `alerts_outbox`(PRD §9.4)에 선기록 후 발송.
-모든 디텍터 이벤트는 발송 여부와 무관하게 구조화 로그로 남는다 (PRD §11.4).
+모든 디텍터 이벤트는 발송 여부와 무관하게 구조화 로그 + `events` 테이블에
+남고(PRD §11.4, §12 — M6), D5 인텐트는 `intents` 테이블에 인텐트당 1행으로
+상태를 남긴다 (재시작 시 열린 행 INTERRUPTED 마킹 — 복원은 하지 않음, §12).
 
 **D4 = 레벨 흡수 방어 독립 디텍터 (PRD §8 D4 v1.12 재구현)**: 케이스 2 폐지
 (v1.11)로 D4는 D5에 공급하지 않는다. 스트릭 수명은 레지스트리 이벤트에 배선 —
@@ -52,7 +54,7 @@ from order_monitor.detectors.d1 import D1Appeared, D1Detector, D1Event, D1Remove
 from order_monitor.detectors.d2 import D2Detector
 from order_monitor.detectors.d3 import D3Detector
 from order_monitor.detectors.d4 import D4Detector
-from order_monitor.detectors.d5 import D5Detector
+from order_monitor.detectors.d5 import D5Detector, D5Event, D5Terminal
 from order_monitor.detectors.watch_level import WatchLevelObserver
 from order_monitor.ingestion.baseline_bootstrap import BootstrapError, fetch_minute_volumes
 from order_monitor.ingestion.events import (
@@ -72,6 +74,8 @@ from order_monitor.ingestion.health import (
 )
 from order_monitor.ingestion.ws_client import BinanceWSClient
 from order_monitor.persistence.alerts_outbox import AlertsOutboxStore
+from order_monitor.persistence.events import EventStore
+from order_monitor.persistence.intents import IntentStore
 from order_monitor.persistence.kv import KVStore
 from order_monitor.persistence.walls import WallStore
 from order_monitor.persistence.watch_levels import WatchStore
@@ -210,6 +214,9 @@ class MonitorService:
         self._store: WallStore | None = None
         self._watch_store: WatchStore | None = None
         self._kv: KVStore | None = None
+        self._event_store: EventStore | None = None
+        self._intent_store: IntentStore | None = None
+        self._run_started_at = 0.0  # startup()에서 확정 — intents 키의 런 식별자
 
     def _cum_traded_at_level(self, side, price: Decimal) -> Decimal:
         # 창 진입 이력 없는 레벨은 관측된 체결이 없다는 뜻 — 0. 벽 레벨은 창
@@ -273,6 +280,15 @@ class MonitorService:
             extra={"count": restored_watches, "unsent_finals": unsent_finals},
         )
 
+        # 디텍터 이벤트·인텐트 기록 (PRD §12, M6 — 튜닝/사후 분석용, 복원 아님).
+        # 이전 런에서 종국 기록 없이 남은(크래시) 열린 인텐트 행을 INTERRUPTED 마킹
+        self._event_store = EventStore(self._db_path)
+        self._intent_store = IntentStore(self._db_path)
+        self._run_started_at = self._clock()
+        interrupted = self._intent_store.mark_interrupted_at_startup(self._clock())
+        if interrupted:
+            logger.info("stale intents marked interrupted", extra={"count": interrupted})
+
     async def run(self) -> None:
         self.startup()
         await self._bootstrap_baseline()
@@ -294,6 +310,10 @@ class MonitorService:
                 self._watch_store.close()
             if self._kv is not None:
                 self._kv.close()
+            if self._event_store is not None:
+                self._event_store.close()
+            if self._intent_store is not None:
+                self._intent_store.close()
 
     async def _bootstrap_baseline(self) -> None:
         """D2 기준선 워밍업 (PRD §8 D2 v1.3) — 실패해도 기동은 계속, D2만 보류."""
@@ -342,7 +362,7 @@ class MonitorService:
                 for d4_event in self.d4.on_depth_snapshot(event, self.contact.active()):
                     self._emit(d4_event)
                 for d5_event in self.d5.evaluate():
-                    self._emit(d5_event)
+                    self._route_d5_live(d5_event)
         elif isinstance(event, AggTradeEvent):
             self.trade_window.add(event)
             self.level_tracker.record_trade(event)
@@ -363,7 +383,7 @@ class MonitorService:
                 for d2_event in self.d2.on_trade(event):
                     self._emit(d2_event)
                 for d5_event in self.d5.evaluate():
-                    self._emit(d5_event)
+                    self._route_d5_live(d5_event)
         elif isinstance(event, DiffDepthEvent):
             diff_result = self.wall_registry.apply_diff(event)
             removals = diff_result.removals
@@ -550,7 +570,17 @@ class MonitorService:
     # ── 디텍터 이벤트 → 로그 + 알림 ────────────────────────────
 
     def _emit(self, event: object) -> None:
-        logger.info("detector event", extra=_event_log_fields(event))
+        fields = _event_log_fields(event)
+        logger.info("detector event", extra=fields)
+        if self._event_store is not None:
+            # 모든 디텍터 이벤트 DB 기록 (PRD §12, M6) — payload는 로그와 동일 필드
+            self._event_store.record(
+                type(event).__name__,
+                getattr(event, "side", None),
+                getattr(event, "price", None),
+                fields,
+                self._clock(),
+            )
         self.dispatcher.dispatch(event)
 
     def _route_d1(self, event: D1Event) -> None:
@@ -558,12 +588,46 @@ class MonitorService:
         self._emit(event)
         if isinstance(event, D1Appeared):
             self.d3.on_d1_appeared(event)
-            self.d5.on_d1_appeared(event)
+            intent_id = self.d5.on_d1_appeared(event)
+            if intent_id is not None and self._intent_store is not None:
+                self._intent_store.register(
+                    self._run_started_at,
+                    intent_id,
+                    event.side,
+                    event.price,
+                    event.qty,
+                    self._clock(),
+                )
         elif isinstance(event, D1Removed):
             self.d3.on_d1_removed(event)
             d5_event = self.d5.on_d1_removed(event)
             if d5_event is not None:
-                self._emit(d5_event)
+                self._route_d5_terminal(d5_event)
+
+    def _route_d5_live(self, event: D5Event) -> None:
+        """evaluate() 경유 D5 이벤트 — 여기의 D5Terminal은 확정 래치뿐 (v1.9,
+        종국 아님): intents 행을 confirmed로 갱신하고 열어둔다."""
+        self._emit(event)
+        if isinstance(event, D5Terminal) and self._intent_store is not None:
+            self._intent_store.mark_confirmed(
+                self._run_started_at,
+                event.intent_id,
+                event.level_realized_rate,
+                self._clock(),
+            )
+
+    def _route_d5_terminal(self, event: D5Terminal) -> None:
+        """소멸/epoch 종료 경유 D5Terminal — 진짜 종국: intents 행 마감.
+        (같은 EXECUTION_CONFIRMED라도 on_d1_removed 경유는 종국이다.)"""
+        self._emit(event)
+        if self._intent_store is not None:
+            self._intent_store.finalize(
+                self._run_started_at,
+                event.intent_id,
+                event.state.value,
+                event.level_realized_rate,
+                self._clock(),
+            )
 
     def _appeared_streak_unalerted(self, event: D1Appeared) -> bool:
         """dispatcher의 APPEARED 스트릭당 1회 게이트 (PRD §8 D1 v1.8) — 미발송
@@ -613,7 +677,7 @@ class MonitorService:
                 for d4_event in self.d4.reset():
                     self._emit(d4_event)  # DEFENSE_INTERRUPTED — 로그만 (dispatcher 미발송)
                 for d5_event in self.d5.reset():
-                    self._emit(d5_event)
+                    self._route_d5_terminal(d5_event)
                 # W는 리셋하지 않는다 (PRD §5.4 v1.13 — 계측은 적재로서 지속).
                 # 공백 낀 봉 오염 + 리포트 공백 플래그만
                 self.candles.mark_gap()

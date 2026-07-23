@@ -123,12 +123,13 @@ class D5Detector:
         self._intents: dict[_Key, _Intent] = {}
         self._next_intent_id = 0
 
-    def on_d1_appeared(self, event: D1Appeared) -> None:
+    def on_d1_appeared(self, event: D1Appeared) -> int | None:
+        """등록 성공 시 intent_id 반환 — 서비스의 intents DB 기록용 (M6, PRD §12)."""
         key = (event.side, event.price)
         if key in self._intents:
-            return  # 이미 등록된 인텐트 — D1 latch가 중복 APPEARED를 막으므로 방어용
+            return None  # 이미 등록된 인텐트 — D1 latch가 중복 APPEARED를 막으므로 방어용
         if len(self._intents) >= MAX_ACTIVE_INTENTS:
-            return  # 메모리 상한 — 신규 등록 거부(결정 10)
+            return None  # 메모리 상한 — 신규 등록 거부(결정 10)
         intent_id = self._next_intent_id
         self._next_intent_id += 1
         self._intents[key] = _Intent(
@@ -138,6 +139,7 @@ class D5Detector:
             registered_qty=event.qty,
             registered_at=self._monotonic(),
         )
+        return intent_id
 
     def on_d1_removed(self, event: D1Removed) -> D5Terminal | None:
         """레벨 소멸 시 즉시 종국 평가 — 이미 종국 처리된 키는 존재하지 않아 no-op."""

@@ -564,6 +564,69 @@ def test_outbox_unsent_alert_resent_on_restart(tmp_path):
     svc2._outbox.close()
 
 
+# ── M6 배선: 디텍터 이벤트·인텐트 DB 기록 (PRD §12) ──────────
+
+
+def test_detector_events_recorded_to_db(tmp_path):
+    svc = make_service(config_with(persist_seconds=1e-9), tmp_path)
+    start_feed(svc)
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))  # D1 평가 → APPEARED
+    rows = svc._event_store.rows("D1Appeared")
+    assert len(rows) == 1
+    assert rows[0]["side"] == "buy"
+    assert rows[0]["price"] == "60000"
+    assert rows[0]["payload"]["qty"] == "1200"  # payload = 로그와 동일 전 필드
+    svc._store.close()
+
+
+def test_intent_lifecycle_recorded_to_db(tmp_path):
+    svc = make_service(config_with(persist_seconds=1e-9, send_d1=False), tmp_path)
+    start_feed(svc)
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))  # APPEARED — 인텐트 등록
+    rows = svc._intent_store.rows()
+    assert len(rows) == 1
+    assert rows[0]["state"] == "active"
+    assert rows[0]["price"] == "60000"
+    assert rows[0]["registered_qty"] == "1200"
+
+    # 케이스1 확정 — 래치 (v1.9): 행은 confirmed로 갱신되고 열린 채 유지
+    svc.on_event(DEPTH, depth_event(bids=[("60000", "1200")], asks=[("60001", "1")], mono=1.0))
+    svc.on_event(AGG, agg_at("60000", "720", mono=1.1))
+    row = svc._intent_store.rows()[0]
+    assert row["state"] == "confirmed"
+    assert row["confirmed_at"] is not None
+    assert row["level_realized_rate"] == "0.6"
+
+    # 벽 소멸 → 래치 마감 종국 (on_d1_removed 경유는 종국)
+    svc.on_event(DIFF, diff_event(121, 130, bids=[("60000", "0")]))
+    assert svc._intent_store.rows()[0]["state"] == "confirmed_closed"
+    svc._store.close()
+
+
+def test_intent_interrupted_on_epoch_end_recorded(tmp_path):
+    svc = make_service(config_with(persist_seconds=1e-9, send_d1=False), tmp_path)
+    start_feed(svc)
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
+    svc.on_disconnected()  # epoch 종료 — D5 reset → INTERRUPTED 종국
+    assert svc._intent_store.rows()[0]["state"] == "interrupted"
+    assert len(svc._event_store.rows("D5Terminal")) == 1  # 이벤트 기록도 동반
+    svc._store.close()
+
+
+def test_crash_open_intent_marked_interrupted_on_restart(tmp_path):
+    config = config_with(persist_seconds=1e-9, send_d1=False)
+
+    svc1 = make_service(config, tmp_path)
+    start_feed(svc1)
+    svc1.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))  # 인텐트 active
+    assert svc1._intent_store.rows()[0]["state"] == "active"
+    svc1._store.close()  # 크래시 가정 — epoch 종료 없이 소멸 (종국 기록 없음)
+
+    svc2 = make_service(config, tmp_path)  # 재시작 — 기동 시 열린 행 마킹 (PRD §12)
+    assert svc2._intent_store.rows()[0]["state"] == "interrupted"
+    svc2._store.close()
+
+
 # ── W 주시 관측 파이프라인 (PRD §8 W v1.13) ──────────────────
 
 
