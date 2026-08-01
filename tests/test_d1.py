@@ -179,6 +179,7 @@ def test_removed_filled_when_traded_covers_drop():
             peak_qty=Decimal(1200),
             cum_traded=Decimal(700),
             attribution=D1Attribution.FILLED,
+            announced=False,
         )
     ]
 
@@ -207,6 +208,47 @@ def test_tombstone_of_active_level_judged_immediately():
     wall.last_qty = Decimal(0)
     events = detector.on_removals([WallRemoval(wall=wall, reason=RemovalReason.TOMBSTONE)])
     assert events[0].attribution is D1Attribution.FILLED
+
+
+def test_removed_announced_when_streak_was_alerted():
+    # 발송 게이트(service)가 마킹한 스트릭의 소멸 → announced (PRD §9.2 v1.15 페어링)
+    clock = FakeClock()
+    detector, wall = activated_detector(clock, cum_traded=Decimal(0))
+    wall.appeared_alerted_since = 0.0  # APPEARED 발송 시점의 스트릭 값
+    wall.last_qty = Decimal(300)
+    wall.first_seen_above_threshold = None  # 레지스트리가 임계 하회 시 타이머 리셋
+    events = detector.evaluate([wall])
+    assert events[0].announced is True
+
+
+def test_removed_not_announced_when_alert_was_suppressed():
+    # 쿨다운에 눌린 APPEARED는 마킹되지 않음 → 소멸도 쿨다운 대상 유지
+    clock = FakeClock()
+    detector, wall = activated_detector(clock, cum_traded=Decimal(0))
+    wall.last_qty = Decimal(300)
+    events = detector.evaluate([wall])
+    assert events[0].announced is False
+
+
+def test_tombstone_removal_carries_announced():
+    clock = FakeClock()
+    detector, wall = activated_detector(clock, cum_traded=Decimal(0))
+    wall.appeared_alerted_since = 0.0
+    wall.last_qty = Decimal(0)
+    events = detector.on_removals([WallRemoval(wall=wall, reason=RemovalReason.TOMBSTONE)])
+    assert events[0].announced is True
+
+
+def test_removed_not_announced_when_marking_is_from_older_streak():
+    # 구 스트릭에서 발송·마킹된 뒤 새 스트릭의 APPEARED가 억제된 경우 — 값 불일치
+    clock = FakeClock(13.0)
+    detector = make_detector(clock)
+    wall = make_wall(first_above=10.0)
+    wall.appeared_alerted_since = 0.0  # 이전 스트릭의 마킹
+    assert len(detector.evaluate([wall])) == 1  # 새 래치 (스트릭 10.0)
+    wall.last_qty = Decimal(0)
+    events = detector.on_removals([WallRemoval(wall=wall, reason=RemovalReason.TOMBSTONE)])
+    assert events[0].announced is False
 
 
 def test_below_floor_removal_of_inactive_noncandidate_is_silent():

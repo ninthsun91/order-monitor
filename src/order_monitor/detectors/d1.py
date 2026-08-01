@@ -8,7 +8,11 @@
   레벨당 1회, `unconfirmed` 레벨은 발화 억제 (PRD §12.1 규칙 2)
 - REMOVED: 활성(APPEARED 발화) 레벨이 `SIZE_THRESHOLD × EXIT_RATIO` 밑으로 하락
   또는 레지스트리에서 소멸(tombstone/하한 미만) 시 발화. `cum_traded_at_level ≥
-  (peak_qty − last_qty) × FILL_ATTRIBUTION`이면 FILLED, 아니면 PULLED
+  (peak_qty − last_qty) × FILL_ATTRIBUTION`이면 FILLED, 아니면 PULLED.
+  `announced`는 이 활성 래치의 APPEARED 알림이 실제 발송됐는지(PRD §9.2 v1.15
+  페어링 보장의 근거) — 래치 등록 시점의 스트릭 값과 `appeared_alerted_since`
+  마킹의 일치로 판정한다. 소멸 시점엔 `first_seen_above_threshold`가 이미
+  리셋되어 있으므로 래치에 스트릭 값을 보관해 비교한다
 - SUPPRESSED: 후보(임계 이상 관측)가 지속 필터 통과 전에 임계 밑으로 내려가거나
   소멸한 경우. 발화가 아니라 로그 전용 — M2 완료 기준 "스푸핑 필터 동작 확인"의
   근거 데이터
@@ -57,6 +61,7 @@ class D1Removed:
     peak_qty: Decimal
     cum_traded: Decimal
     attribution: D1Attribution
+    announced: bool  # 이 래치의 APPEARED 알림이 실제 발송됨 → 소멸은 쿨다운 우회 (PRD §9.2 v1.15)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -90,7 +95,9 @@ class D1Detector:
         self._fill_attribution = fill_attribution
         self._cum_traded = cum_traded_lookup
         self._clock = clock
-        self._active: set[_Key] = set()
+        # 활성 래치: key → APPEARED 발화 시점의 스트릭 값(first_seen_above_threshold).
+        # 소멸 시 appeared_alerted_since와 대조해 announced를 판정한다
+        self._active: dict[_Key, float] = {}
         # 임계 이상 관측됐지만 아직 지속 필터를 통과하지 못한 후보:
         # key → 관측 시작 시각 (wall.first_seen_above_threshold의 사본 — 값이
         # 바뀌면 사이에 임계 하회가 있었다는 뜻이므로 스트릭 교체로 감지)
@@ -105,8 +112,8 @@ class D1Detector:
 
             if key in self._active:
                 if wall.last_qty < self._exit_qty:
-                    self._active.discard(key)
-                    events.append(self._judge_removed(wall))
+                    active_since = self._active.pop(key)
+                    events.append(self._judge_removed(wall, active_since))
                 continue
 
             since = wall.first_seen_above_threshold
@@ -128,7 +135,7 @@ class D1Detector:
 
             if now - since >= self._persist_seconds:
                 self._candidate_since.pop(key, None)
-                self._active.add(key)
+                self._active[key] = since
                 events.append(
                     D1Appeared(
                         side=wall.side,
@@ -149,9 +156,9 @@ class D1Detector:
             wall = removal.wall
             key = (wall.side, wall.price)
             if key in self._active:
-                self._active.discard(key)
+                active_since = self._active.pop(key)
                 self._candidate_since.pop(key, None)
-                events.append(self._judge_removed(wall))
+                events.append(self._judge_removed(wall, active_since))
             else:
                 suppressed = self._pop_candidate(key, wall, now)
                 if suppressed is not None:
@@ -163,7 +170,7 @@ class D1Detector:
         self._active.clear()
         self._candidate_since.clear()
 
-    def _judge_removed(self, wall: Wall) -> D1Removed:
+    def _judge_removed(self, wall: Wall, active_since: float) -> D1Removed:
         cum_traded = self._cum_traded(wall.side, wall.price)
         dropped = wall.peak_qty - wall.last_qty
         filled = cum_traded >= dropped * self._fill_attribution
@@ -174,6 +181,7 @@ class D1Detector:
             peak_qty=wall.peak_qty,
             cum_traded=cum_traded,
             attribution=D1Attribution.FILLED if filled else D1Attribution.PULLED,
+            announced=wall.appeared_alerted_since == active_since,
         )
 
     def _pop_candidate(self, key: _Key, wall: Wall, now: float) -> D1Suppressed | None:

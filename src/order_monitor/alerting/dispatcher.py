@@ -1,7 +1,9 @@
 """알림 정책 게이트 — on/off, dedup·쿨다운, 메시지 포맷 (PRD §9.1, §9.2).
 
 - D1 전용 dedup (v1.3 범위 재분리): 키 `(detector, side, price_bucket)` +
-  `ALERT_COOLDOWN`. D2는 시간 쿨다운 미적용 — 에피소드당 온셋/요약 각 1회가
+  `ALERT_COOLDOWN`. 단, `announced` REMOVED(출현 알림이 실제 발송된 래치의
+  소멸)는 쿨다운을 우회해 무조건 발송 — 페어링 보장, 발송량은 소멸 ≤ 출현으로
+  상한 (PRD §9.2 v1.15). D2는 시간 쿨다운 미적용 — 에피소드당 온셋/요약 각 1회가
   구조적으로 보장되고 병합 창이 재점화 스팸을 흡수 (PRD §9.2 v1.3).
   D5 종국/진행률은 intent 기반 순수 멱등 셋(시간 쿨다운 없음) — 아래 참고
 - 쿨다운 시계는 monotonic (PRD §11.1). D5 메시지의 "발생 시각" 표기와 outbox
@@ -196,6 +198,11 @@ class AlertDispatcher:
         elif isinstance(event, D1Removed):
             if not self._alerts.send_d1:
                 return False
+            if event.announced:
+                # 출현 알림이 나간 벽의 소멸은 쿨다운 우회 — 페어링 보장 (PRD §9.2
+                # v1.15). deduper 기록도 안 함: 출현 측 쿨다운 타이밍 무변경
+                self._sender.enqueue(self._format_d1_removed(event))
+                return True
             key = ("d1", event.side.value, self._bucket(event.price))
             text = self._format_d1_removed(event)
         elif isinstance(event, D2BurstOnset):

@@ -242,6 +242,18 @@ def test_d1_alert_sent_after_restart_when_streak_never_announced(tmp_path):
     svc2._store.close()
 
 
+def test_d1_removed_sent_within_cooldown_when_appeared_was_announced(tmp_path):
+    # 07-31 63k 사례 재현: 출현 알림 발송 직후(쿨다운 300s 내) tombstone 소멸 —
+    # 출현이 발송된 벽의 소멸은 쿨다운 우회로 반드시 발송 (PRD §9.2 v1.15 페어링 보장)
+    svc = make_service(config_with(persist_seconds=1e-9, send_d1=True), tmp_path)
+    start_feed(svc)
+    svc.on_event(DIFF, diff_event(111, 120, bids=[("59500", "150")]))
+    assert svc.telegram.pending() == 1  # APPEARED 발송 — 같은 버킷 쿨다운 arm
+    svc.on_event(DIFF, diff_event(121, 130, bids=[("60000", "0")]))
+    assert svc.telegram.pending() == 2  # REMOVED 우회 발송
+    svc._store.close()
+
+
 def test_d2_onset_flows_to_alert_queue(service):
     # 기준선 워밍업 완료 상태 흉내 (분당 4 BTC × 24h) → thr = max(30, 40) ≈ 40
     service.volume_baseline.bootstrap((m * 60_000, Decimal(4)) for m in range(1440))

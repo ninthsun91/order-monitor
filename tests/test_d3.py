@@ -22,6 +22,7 @@ def removed(side=Side.BUY, price="61000"):
         peak_qty=Decimal("1200"),
         cum_traded=Decimal("0"),
         attribution=D1Attribution.PULLED,
+        announced=False,
     )
 
 

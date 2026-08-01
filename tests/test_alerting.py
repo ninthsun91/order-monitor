@@ -49,7 +49,7 @@ def appeared(price="61000"):
     return D1Appeared(side=Side.BUY, price=Decimal(price), qty=Decimal(1200), persisted_seconds=3.2)
 
 
-def removed():
+def removed(announced=False):
     return D1Removed(
         side=Side.BUY,
         price=Decimal("61000"),
@@ -57,6 +57,7 @@ def removed():
         peak_qty=Decimal("1364.86"),
         cum_traded=Decimal(980),
         attribution=D1Attribution.FILLED,
+        announced=announced,
     )
 
 
@@ -247,6 +248,30 @@ def test_same_bucket_suppressed_within_cooldown():
     clock.now = 299.0
     assert dispatcher.dispatch(appeared("61020")) is False
     assert dispatcher.dispatch(removed()) is False
+    clock.now = 300.0
+    assert dispatcher.dispatch(appeared("61020")) is True
+
+
+def test_announced_removed_bypasses_cooldown():
+    # 07-31 63k 사례 재현: 출현 알림 발송 86초 뒤(쿨다운 내) 벽 소멸 —
+    # 출현이 발송된 래치의 소멸은 무조건 발송 (페어링 보장, PRD §9.2 v1.15)
+    clock = FakeClock()
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(send_d1=True), sender, monotonic=clock)
+    assert dispatcher.dispatch(appeared()) is True
+    clock.now = 86.0
+    assert dispatcher.dispatch(removed(announced=True)) is True
+    assert len(sender.sent) == 2
+
+
+def test_announced_removed_does_not_touch_cooldown_timer():
+    clock = FakeClock()
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(send_d1=True), sender, monotonic=clock)
+    assert dispatcher.dispatch(appeared()) is True
+    clock.now = 86.0
+    assert dispatcher.dispatch(removed(announced=True)) is True
+    # 우회 발송은 deduper 미기록 — 같은 버킷 쿨다운은 출현(t=0) 기준 그대로 만료
     clock.now = 300.0
     assert dispatcher.dispatch(appeared("61020")) is True
 
