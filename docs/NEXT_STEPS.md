@@ -35,7 +35,7 @@
 
 **참조**: PRD v1.16 (§5.5·§10·§12·§13 M8) + DEVELOPMENT_PLAN "M8" 절(체크박스·검증 기록 — pytest 496건, 바이낸스 replay 골든 무변경) + 결정 기록 2026-08-02 (2행: 스펙 확정 + 구현 확정 7건). 잔여:
 
-- **배포**: VPS config.yaml에 `exchanges:` 섹션 추가 (대조 기준 config.example.yaml — coinbase 500/50/0.20). 선택 섹션이라 미추가 시 바이낸스 단독으로 기존 동작 무변경. DB 마이그레이션은 기동 시 자동
+- **배포 (v1.17 갱신 — config 전면 재편 필수)**: VPS config.yaml에서 top-level `symbol`·`thresholds.size_threshold_btc`·`wall_tracker.record_min_qty_btc` 삭제 + `exchanges:` 섹션(binance 1000/100/0 필수, coinbase 500/50/0.20) 추가 — 대조 기준 config.example.yaml, **엄격 스키마라 미수정 시 기동 실패**. 로컬 config.yaml은 반영 완료. DB 마이그레이션은 기동 시 자동
 - **실전 확인** (완료 기준): Coinbase D1 출현→소멸 사이클 1건 — 배포 후 자연 진행. 현재 Coinbase 벽 스케일은 50~310 BTC(라이브 골든)라 500 임계 발화는 대형 벽 이벤트 대기
 - **분포 수집** (OQ #6): events DB의 coinbase 행 축적 → 500/50 조정 검토, 타 툴 병행 관측 병행
 - Coinbase `matches` 드랍의 REST 갭필 보정 여부는 실측 드랍률 보고 결정 (PRD §14 — trade_gap epoch 종료 빈도 관찰)

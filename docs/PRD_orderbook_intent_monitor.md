@@ -2,10 +2,12 @@
 
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v1.16 |
-| 작성일 | 2026-07-11 (v1.1/v1.2 개정 동일, v1.3은 2026-07-12, v1.4는 2026-07-13, v1.5는 2026-07-14, v1.6/v1.7은 2026-07-15, v1.8/v1.9/v1.10/v1.11은 2026-07-22, v1.12/v1.13/v1.14는 2026-07-23, v1.15는 2026-08-01, v1.16은 2026-08-02) |
+| 문서 버전 | v1.17 |
+| 작성일 | 2026-07-11 (v1.1/v1.2 개정 동일, v1.3은 2026-07-12, v1.4는 2026-07-13, v1.5는 2026-07-14, v1.6/v1.7은 2026-07-15, v1.8/v1.9/v1.10/v1.11은 2026-07-22, v1.12/v1.13/v1.14는 2026-07-23, v1.15는 2026-08-01, v1.16/v1.17은 2026-08-02) |
 | 상태 | Draft |
 | 대상 | 단일 개발자(운영자 겸), Claude Code 기반 개발 |
+
+> **v1.17 개정 (2026-08-02, M8 구현 완료 직후 config 일관성 정리 — 사용자 확정 2건)**: **거래소 스코프 키를 `exchanges.*`로 통합 — 바이낸스 포함** (§10, §5.5). v1.16이 "바이낸스는 exchanges에 넣지 않음(기존 top-level 유지)"으로 잡았던 구조의 번복: top-level `symbol`·`thresholds.size_threshold_btc`·`wall_tracker.record_min_qty_btc`를 삭제하고 `exchanges.binance`로 이동한다 (`wall_tracker`엔 `ttl_days`만 잔존). 거래소 스코프 의미의 키가 글로벌처럼 보이는 이름으로 남으면 Kraken/Bitfinex 추가 시 혼동이 누적되고, 첫 배포 전이라 하위호환을 지킬 대상이 사실상 없어(단일 운영자) 이행 비용이 최소인 시점. 확정 2건: (1) **`exchanges`는 필수 섹션 + `binance` 필수 포함** — v1.16의 "섹션 부재 = 바이낸스 단독" 하위호환 의미론 폐기, "binance 없이 신규 거래소만" 구성은 요구 없는 유연성으로 불허(프라이머리 결정 단순화) (2) **바이낸스 `band_pct: 0`** (게이트 없음 — 거래소단 PERCENT_PRICE 필터가 대역 담당), 불변조건 `0 < band ≤ 1` → `0 ≤ band ≤ 1` 완화. 판정 파라미터(persist·ratio류 등)는 글로벌 공유 유지 — 이동 대상은 거래소 스코프 3키뿐. 2단 임계치 순서 불변조건은 거래소 스코프 검증(v1.16 기존)이 단독 계승. **배포 주의**: 엄격 스키마 — VPS config.yaml을 반드시 동시 재편 (미수정 시 기동 실패. 어차피 Coinbase 활성화로 수정이 필요한 배포라 비용 합산). 값은 전부 보존이므로 판정 동작 무변경 — replay 골든 21건 무변경이 검증 게이트.
 
 > **v1.16 개정 (2026-08-02, 멀티 거래소 확장 스펙 토의 — 사용자 확정)**: **고래 유동성 거래소(Coinbase·Kraken·Bitfinex)로의 관측 확장 — 거래소별 독립 파이프라인, D1+D3+D5 한정** (§2, §3, §5.5 신설, §9.3, §10, §12, §13 M8, §14, §15 #6, §16). 배경: 대형 벽 추적의 전제("큰 가격 움직임엔 스마트머니 주체가 동반된다" — 사용자)에서 바이낸스 단독 관측은 고래 유동성의 절반만 본다. 선정 축은 현물 거래량 점유율이 **아니라 ±1% 뎁스(고래 유동성)** — 실측(2026-08-02, BTC ~$62.9k, ±1% 누적 뎁스 BTC): Binance 539 / **Kraken 489**(거래량 ~1/20인데 뎁스 91%) / **Coinbase 298** / **Bitfinex 253** / OKX 172 / Bybit 100. Kaiko 1% 뎁스 순위도 Coinbase·Kraken이 1·2위, Binance 3위 — 거래량 2위 Bybit가 뎁스 최하위로, 두 지표는 완전히 다른 축이다(OKX·Bybit는 MM 호가 위주 얇은 북이라 후순위). 골자: (1) **거래소별 독립 파이프라인 — 합산 금지**(§3 비목표 유지): 벽·체결 귀속·epoch·임계값·판정 전부 거래소 스코프, 가격축(USD/USDT)도 분리. 거래소 간 접점은 알림 venue 태깅(§9.3)과 events DB의 exchange 축(§12) 둘뿐. (2) **디텍터 스코프 = D1+D3+D5** — 벽 수명주기 전체(출현→접촉 체결 누적→진행률→확정→FILLED/PULLED 소멸)를 신규 거래소에서 동일 재현. D2·D4 제외(100ms 근접북 스냅샷 케이던스 의존 + 자체 로직 M6 튜닝 중), W 제외(명령의 거래소 인자 확장은 독립 후속). (3) **어댑터 계약**: 신규 코드는 어댑터(WS+정규화+epoch 규칙)로 한정 — 정규화 이벤트 3종을 생산하면 상태·디텍터·알림·영속화 무변경 재사용. 구독 = 절대잔량 채널 + 체결 + ticker(최우선호가), **로컬 풀북 유지 금지**(D2·D4 제외가 정확히 이 필요를 제거 — D1+D3+D5 입력은 셋 다 풀북 불필요). (4) **DB**: 단일 DB + `exchange` 컬럼(walls·intents PK 재생성, events ALTER, alerts_outbox UNIQUE 재생성 — §12). (5) **임계값 데이터 선행**: 1000 BTC는 바이낸스 스코프 값(신규 3곳 현재 최대 오더 30~60 BTC 실측) — 낮은 관측 플로어로 분포 수집 후 확정(§15 #6). 1차 대상 Coinbase(유일한 full-book 절대잔량 채널 — 이식성 최상), Kraken·Bitfinex는 후속.
 
@@ -200,7 +202,7 @@ diff 스트림으로 full book을 유지하려면 REST 스냅샷 + U/u 시퀀스
 | `trade_window` | 최근 `WINDOW_SECONDS` 체결 deque: `(ts, price, qty, aggressor_side)` | aggTrade push, 만료분 pop |
 | `volume_baseline` (v1.3) | 최근 `vol_baseline_hours`(24h) 분당 총 테이커 볼륨 버킷 deque + 러닝 합계 — D2 상대 임계의 기준선 | aggTrade push (`exchange_time` 분 버킷 — 단일 스트림 시간창, §11.1), 기동 시 REST klines 1회 부트스트랩 (§8 D2) |
 | `intents` | D5 상태기계 인스턴스 목록 (§8 D5) | 디텍터 이벤트 |
-| `wall_registry` (v1.1) | 기록 하한(`wall_tracker.record_min_qty_btc`) 이상 대형 레벨: `{price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since}` — `last_seen_at`은 **판정 미사용**(구 TTL 규칙 폐기(§12.1 v1.2) 이후 관측·튜닝용만 남음. 로직을 걸지 말 것) | **(v1.2)** 신규 가격은 `record_min_qty_btc` 이상일 때만 등록. 이미 추적 중인 가격은 **잔량 값과 무관하게 모든 diff 이벤트로 덮어쓰기**. 잔량 0(명시적 tombstone) 또는 기록 하한 미만 하락 시 소멸 판정(§8 D1 REMOVED) 후 활성 레지스트리에서 제거 |
+| `wall_registry` (v1.1) | 기록 하한(`exchanges.*.record_min_qty_btc` — v1.17 이동, 구 `wall_tracker` 소속) 이상 대형 레벨: `{price, side, last_qty, peak_qty, first_seen_at, first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since}` — `last_seen_at`은 **판정 미사용**(구 TTL 규칙 폐기(§12.1 v1.2) 이후 관측·튜닝용만 남음. 로직을 걸지 말 것) | **(v1.2)** 신규 가격은 `record_min_qty_btc` 이상일 때만 등록. 이미 추적 중인 가격은 **잔량 값과 무관하게 모든 diff 이벤트로 덮어쓰기**. 잔량 0(명시적 tombstone) 또는 기록 하한 미만 하락 시 소멸 판정(§8 D1 REMOVED) 후 활성 레지스트리에서 제거 |
 
 **level_tracker 스코프 전제 (v1.2)**: D1 FILLED/PULLED 귀속(§8)이 읽는 `cum_traded_at_level`은 top-20 스코프로 충분하다 — 벽이 소진되어 귀속 판정이 일어나는 시점에는 가격이 이미 그 레벨에 접촉해 있어 해당 레벨이 top-20 창 안에 있기 때문이다. 구현 시 이 전제(귀속 판정 시점 = 접촉 상태)에 의존함을 유의한다.
 
@@ -516,10 +518,7 @@ W 주시 레벨(§8 W)의 등록/해소는 재시작 없이 이루어져야 한�
 ## 10. 설정 (config.yaml)
 
 ```yaml
-symbol: BTC/USDT
-
-thresholds:
-  size_threshold_btc: 1000       # D1/D5 인텐트 기준 (v1.1 확정 — 벽 레지스트리 레벨에 적용, §8 D1)
+thresholds:                      # 전 거래소 공유 판정 파라미터 (v1.17 — 거래소 스코프 키는 exchanges.*로)
   persist_seconds: 3             # D1 스푸핑 필터
   exit_ratio: 0.5
   fill_attribution: 0.7
@@ -553,9 +552,7 @@ alerts:
   bucket_size_usdt: 50
   cooldown_seconds: 300
 
-wall_tracker:                    # v1.1 — diff 탭 벽 레지스트리
-  record_min_qty_btc: 100        # 레지스트리 "기록" 하한 (절대 잔량). 알림 기준이 아님 — 관측 시야 + M6 튜닝 데이터 확보용.
-                                 # 100인 이유: 65k의 ~100 BTC급 근접 물량까지 포착 (150이면 누락). 알림은 thresholds.size_threshold_btc가 게이트
+wall_tracker:                    # v1.1 — diff 탭 벽 레지스트리 (v1.17 — record_min_qty_btc는 exchanges.*로 이동)
   ttl_days: 7                    # unconfirmed 마킹(unconfirmed_since) 후 이 기간 재확인 이벤트가 없으면 삭제 (v1.2 — 확인된 벽은 무기한 유지, events 이력은 보존)
 
 watch:                           # v1.13 — W 주시 레벨 관측기 (§8 W). 주시 "목록"은 config가 아니라 런타임 명령(§9.5) + SQLite(§12.2)
@@ -565,8 +562,13 @@ watch:                           # v1.13 — W 주시 레벨 관측기 (§8 W). 
   invalidate_buffer_pct: 0.0025  # 무효화 마감가 버퍼 (0.25%)
   report_interval_seconds: 600   # 주기 리포트 간격 (5~15분 권장 대역)
 
-exchanges:                       # v1.16 — 멀티 거래소 (§5.5). 섹션 자체 또는 개별 거래소 미기재 = 해당 거래소 미모니터링 (바이낸스 단독 구성은 기존 동작 무변경)
-  coinbase:                      # M8 1차 대상. kraken·bitfinex는 후속 마일스톤에서 동일 형태로 추가
+exchanges:                       # v1.16 신설, v1.17 — 필수 섹션 + binance 필수 포함. 거래소 스코프 키의 단일 거처
+  binance:                       # 프라이머리 — 전 디텍터 (D1~D5 + W)
+    symbol: BTC/USDT
+    size_threshold_btc: 1000     # D1/D5 인텐트 기준 (v1.1 확정 — 벽 레지스트리 레벨에 적용, §8 D1)
+    record_min_qty_btc: 100      # 레지스트리 "기록" 하한 — 관측 시야 + 튜닝 데이터용, 100인 이유는 65k의 ~100 BTC급 근접 물량 포착 (v1.1)
+    band_pct: 0                  # 게이트 없음 — 거래소단 PERCENT_PRICE 필터가 대역 담당 (v1.17 확정)
+  coinbase:                      # M8 1차 대상 — 미기재 = 미모니터링. kraken·bitfinex는 후속 마일스톤에서 동일 형태로 추가
     symbol: BTC-USD
     size_threshold_btc: 500      # 사용자 지정 초기값 (2026-08-02) — 바이낸스 1000의 절반, 타 툴 병행 관측 후 조정 (§15 #6)
     record_min_qty_btc: 50       # 관측 플로어 — 바이낸스 100의 절반 (동일 결정)
@@ -590,13 +592,12 @@ watchdog:
 
 - 모든 수치 파라미터 > 0
 - 비율류(`exit_ratio`, `fill_attribution`, `absorption_min_pct`, `realize_pct`, `progress_step_pct`, `episode_exit_ratio`, `delta_directional_ratio`, `delta_balanced_ratio`): 0 < x ≤ 1 (v1.11 — `realize_pct_above` 삭제. 신규 D4 키는 `absorb_multiple` > 1, `absorb_progress_step` > 0, `absorb_min_events` ≥ 1)
-- `wall_tracker.record_min_qty_btc < thresholds.size_threshold_btc` (2단 임계치 순서)
 - `thresholds.delta_balanced_ratio < thresholds.delta_directional_ratio` (성격 라벨 경계 순서, v1.3)
 - `thresholds.vol_multiplier > 1` (상대 임계의 의미 조건, v1.3)
 - `watchdog.heartbeat_interval < watchdog.stale_seconds`
 - `watch.confirm_timeframe` ∈ {"15m", "1h"}, `watch.confirm_closes`는 정수 ≥ 1, `watch.report_interval_seconds` ≥ 60 (v1.13 — Telegram 초당 상한·스팸 하한)
 - `telegram.command_chat_ids`는 문자열 목록, 최소 1개 (v1.14 — 빈 목록은 수신 기능 자체를 무의미하게 만드는 오설정)
-- `exchanges.*`: `record_min_qty_btc < size_threshold_btc` (2단 임계치 순서 — 바이낸스와 동일 원리), `band_pct` > 0, `symbol` 비어있지 않음 (v1.16). 거래소별 섹션은 엄격 스키마(`_build_section` 패턴) 동일 적용 — 미지 키 거부
+- `exchanges.*`: `record_min_qty_btc < size_threshold_btc` (2단 임계치 순서 — v1.17부터 바이낸스 포함 이 검증이 단독 담당), `0 ≤ band_pct ≤ 1` (0 = 게이트 없음, v1.17), `symbol` 비어있지 않음. 거래소별 섹션은 엄격 스키마(`_build_section` 패턴) 동일 적용 — 미지 키 거부. **`exchanges`는 필수 섹션이고 `binance`를 반드시 포함한다 (v1.17)**
 
 ## 11. 비기능 요구사항
 

@@ -89,13 +89,14 @@ Coinbase 어댑터 (PRD §5.5 표):
 - [x] 레지스트리 등록 가격대역 필터 `band_pct` → **완료 2026-08-02** (신규 등록에만, 추적 중 가격은 전 이벤트 처리. **이벤트 유도 mid 폴백** 추가 — 기동 직후 snapshot이 첫 ticker 선행 시 쓰레기 주문 D1 오알림 방어, 구현 중 발견 결함. 실측: $0.01에 65,000 BTC 매수 주문)
 - [x] epoch 규칙 → **완료 2026-08-02** (SessionEpochTracker 파라미터화 — streams/stale_thresholds 주입, ticker는 체결 주도라 trade_stale 임계. `check_trade_continuity` — match trade_id 갭 시 `trade_gap` 종료, **unconfirmed 미마킹**(체결 손실 ≠ diff 청취 공백), disconnect 시 기준점 리셋. REST 갭필 보정은 실측 드랍률 보고 결정 — 잔여 관찰)
 - [x] replay → **완료 2026-08-02** (합성 3종: D1 풀사이클(출현→진행 20/40→확정 60% 래치→D3→FILLED 소멸→CONFIRMED_CLOSED)·재연결(INTERRUPTED+unconfirmed→full snapshot 재확인→재발화)·trade_id 갭 + 라이브 60s 골든(벽 10개, D1 무발화 — 임계 미달 실측 정합) + 같은 DB 격리 재생 + 이중 재생 결정성. `capture_stream.py --exchange coinbase` 확장)
+- [x] **(2026-08-02 사용자 확정, PRD v1.17)** config 일관성 정리 — 거래소 스코프 3키(symbol·size_threshold_btc·record_min_qty_btc)를 `exchanges.*`로 통합 (바이낸스 포함) → **완료 2026-08-02** (exchanges 필수화 + binance 필수 포함, band_pct 0 허용, service 키 소스 분기 제거, 로컬 config.yaml 반영. pytest 497건 + replay 골든 21건 무변경 — 결정 기록 2026-08-02 v1.17 행)
 - [ ] events 분포 수집 → 임계 500/50 조정 검토 (오픈 퀘스천 #6 — **배포 후**, 타 툴 병행 관측)
 
 **완료 기준 (PRD §13 M8)**: Coinbase replay 통과 ✅ + **기존 바이낸스 replay 골든 무변경** ✅ + 실전 Coinbase D1 출현→소멸 사이클 1건 (**잔여** — 배포 후) + 분포 수집 개시 (**잔여** — 배포 후). Kraken·Bitfinex 어댑터는 M8 완료 후 후속 마일스톤.
 
 검증 기록:
 - 2026-08-02 M8 구현: pytest 496건 전건 통과 (신규 57건 — persistence 마이그레이션/격리 8, config exchanges 7, wall_registry band 7, dispatcher venue 2, health 주입 3, coinbase 파서/클라이언트/trade갭/LevelTracker 15, service 파이프라인 6(게이팅·epoch·venue·band·동일 DB 격리), replay coinbase 10 — 시나리오 골든 + 결정성). **기존 바이낸스 replay 11건 골든 무변경** (매 커밋 게이트로 확인). Coinbase 스키마는 30s+60s 라이브 캡처로 실검증 — match side=maker side(ticker taker side와 교차), l2update 절대잔량 트리플, trade_id 105건 연속 무갭, snapshot 시퀀스 부재(로컬 카운터 불필요 — 0 고정)
-- **배포 주의**: VPS config.yaml에 `exchanges:` 섹션 추가 시 Coinbase 파이프라인 기동 (선택 섹션 — 미추가 시 바이낸스 단독, 기존 동작 무변경). DB 마이그레이션은 기동 시 자동 (기존 DB 사본 리허설 완료 — 구스키마 테스트로 검증)
+- **배포 주의 (v1.17 갱신)**: VPS config.yaml **전면 재편 필수** — top-level `symbol`·`thresholds.size_threshold_btc`·`wall_tracker.record_min_qty_btc` 삭제 + `exchanges:` 섹션(binance 필수, coinbase 선택) 추가. 엄격 스키마라 미수정 시 기동 실패 — config.example.yaml 대조. DB 마이그레이션은 기동 시 자동 (기존 DB 사본 리허설 완료 — 구스키마 테스트로 검증)
 
 ---
 
