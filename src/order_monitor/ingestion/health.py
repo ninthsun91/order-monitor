@@ -65,16 +65,32 @@ class SessionEpochTracker:
         stale_seconds: float,
         trade_stale_seconds: float,
         clock: Callable[[], float] = time.monotonic,
+        streams: tuple[str, str, str] | None = None,
+        stale_thresholds: dict[str, float] | None = None,
+        check_diff_continuity: bool = True,
     ) -> None:
-        depth, agg_trade, diff = stream_names(symbol)
+        """(v1.16) streams/stale_thresholds/check_diff_continuity로 거래소별 구성 주입.
+
+        - streams: (depth류, 체결류, diff류) — 미지정 시 바이낸스 stream_names(symbol)
+        - stale_thresholds: 스트림별 임계 오버라이드 — Coinbase는 ticker(depth류)도
+          체결 주도 push라 trade_stale_seconds를 써야 한다 (PRD §5.5)
+        - check_diff_continuity: 바이낸스 U/u 연속성 검사 — Coinbase l2 채널은
+          시퀀스가 없어 비활성 (갭 대응은 trade_id 갭·staleness가 담당, PRD §5.5)
+        """
+        depth, agg_trade, diff = streams if streams is not None else stream_names(symbol)
         self._depth_stream = depth
         self._agg_trade_stream = agg_trade
         self._diff_stream = diff
-        self._stale_thresholds = {
-            depth: stale_seconds,
-            diff: stale_seconds,
-            agg_trade: trade_stale_seconds,  # 체결 발생 시에만 push라 느슨한 임계 (§10)
-        }
+        self._stale_thresholds = (
+            dict(stale_thresholds)
+            if stale_thresholds is not None
+            else {
+                depth: stale_seconds,
+                diff: stale_seconds,
+                agg_trade: trade_stale_seconds,  # 체결 발생 시에만 push라 느슨한 임계 (§10)
+            }
+        )
+        self._check_diff_continuity = check_diff_continuity
         self._clock = clock
 
         self._subscribed = False
@@ -115,7 +131,7 @@ class SessionEpochTracker:
         self._last_recv[stream] = event.local_monotonic_receive_time
         self._stale.discard(stream)
 
-        if isinstance(event, DiffDepthEvent):
+        if isinstance(event, DiffDepthEvent) and self._check_diff_continuity:
             prev = self._prev_final_update_id
             self._prev_final_update_id = event.final_update_id
             if prev is not None and event.first_update_id != prev + 1:

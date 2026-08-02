@@ -211,3 +211,59 @@ class TestEpochIds:
         t.on_event(AGG, agg_event())
         notices = t.on_event(DIFF, diff_event(200, 210))
         assert notices == [EpochStarted(epoch_id=2)]
+
+
+# ---- v1.16 거래소별 구성 주입 (PRD §5.5) ----
+
+CB_TICKER = "coinbase:BTC-USD@ticker"
+CB_MATCHES = "coinbase:BTC-USD@matches"
+CB_L2 = "coinbase:BTC-USD@level2"
+
+
+def coinbase_tracker(clock=None):
+    # ticker(depth류)는 체결 주도 push — trade_stale_seconds 적용 (§5.5)
+    return SessionEpochTracker(
+        symbol="BTC-USD",
+        stale_seconds=30.0,
+        trade_stale_seconds=60.0,
+        clock=clock or FakeClock(),
+        streams=(CB_TICKER, CB_MATCHES, CB_L2),
+        stale_thresholds={CB_L2: 30.0, CB_TICKER: 60.0, CB_MATCHES: 60.0},
+        check_diff_continuity=False,
+    )
+
+
+def test_custom_streams_epoch_starts_after_all_three():
+    t = coinbase_tracker()
+    t.on_subscribed()
+    assert t.on_event(CB_L2, diff_event(1, 1, mono=0.1)) == []
+    assert t.on_event(CB_MATCHES, agg_event(mono=0.2)) == []
+    notices = t.on_event(CB_TICKER, depth_event(mono=0.3))
+    assert any(isinstance(n, EpochStarted) for n in notices)
+
+
+def test_diff_continuity_check_disabled_ignores_gaps():
+    # Coinbase l2는 어댑터 로컬 카운터라 U/u 갭 검사 무의미 — 비활성 확인
+    t = coinbase_tracker()
+    t.on_subscribed()
+    t.on_event(CB_L2, diff_event(1, 1, mono=0.1))
+    t.on_event(CB_MATCHES, agg_event(mono=0.2))
+    t.on_event(CB_TICKER, depth_event(mono=0.3))
+    assert t.epoch_active
+    notices = t.on_event(CB_L2, diff_event(100, 100, mono=0.4))  # 갭이지만 무시
+    assert not any(isinstance(n, EpochEnded) for n in notices)
+    assert t.epoch_active
+
+
+def test_custom_stale_thresholds_applied_per_stream():
+    clock = FakeClock()
+    t = coinbase_tracker(clock)
+    t.on_subscribed()
+    t.on_event(CB_L2, diff_event(1, 1, mono=0.0))
+    t.on_event(CB_MATCHES, agg_event(mono=0.0))
+    t.on_event(CB_TICKER, depth_event(mono=0.0))
+    clock.now = 45.0  # l2(30s) 초과, ticker/matches(60s) 미만
+    notices = t.check_staleness()
+    stale = [n for n in notices if isinstance(n, StreamStale)]
+    assert [n.stream for n in stale] == [CB_L2]
+    assert any(isinstance(n, DiffListeningGap) for n in notices)  # l2 = diff류
