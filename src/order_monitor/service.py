@@ -27,6 +27,15 @@ D1 REMOVED 판정 → D1 이벤트를 D3 등록 해제 + D5 소멸 평가로 라
 주기 리포트는 staleness 틱의 동기 `watch.on_tick()`(replay 결정성 — D2 패턴),
 주시 등록/해소는 텔레그램 수신 루프(§9.5, `_telegram_commands_loop`)가 콜백으로
 중개하고 등록/flush/무효화 선기록은 `watch_levels` 테이블에 영속된다 (§12.2).
+
+**멀티 거래소 (M8, PRD §5.5 v1.16)**: 한 인스턴스 = 한 거래소 파이프라인.
+`exchange="binance"`(기본)는 전 기능 종전 그대로, `exchange="coinbase"`는
+D1+D3+D5만 배선한다 — D2·D4·W·candles는 None (100ms 근접북 케이던스 의존 +
+바이낸스 전용, §5.5). 근접북은 ticker 합성 top-1 스냅샷 — 로컬 풀북 유지 금지.
+프로세스 공유 자원(TelegramSender·heartbeat·수신 명령 루프)은 프라이머리
+(sender를 직접 만든 인스턴스)만 구동하고, 세컨더리는 `telegram_sender` 주입으로
+공유한다. 거래소 간 실시간 결합은 없다 — 접점은 알림 venue 표기와 DB의
+exchange 축뿐 (§5.5).
 """
 
 from __future__ import annotations
@@ -72,6 +81,7 @@ from order_monitor.ingestion.health import (
     SessionEpochTracker,
     StreamStale,
 )
+from order_monitor.ingestion.coinbase import CoinbaseWSClient, coinbase_stream_names
 from order_monitor.ingestion.ws_client import BinanceWSClient
 from order_monitor.persistence.alerts_outbox import AlertsOutboxStore
 from order_monitor.persistence.events import EventStore
@@ -112,59 +122,116 @@ class MonitorService:
         heartbeat_path: str | Path = "order_monitor.heartbeat",
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
+        exchange: str = "binance",
+        telegram_sender: TelegramSender | None = None,
     ) -> None:
-        # 클록 주입은 결정적 replay 테스트용 (PRD §13) — 운영은 기본값
+        # 클록 주입은 결정적 replay 테스트용 (PRD §13) — 운영은 기본값.
+        # exchange/telegram_sender는 M8 멀티 파이프라인 (모듈 docstring) —
+        # 기본값 = 바이낸스 프라이머리, 종전 동작 그대로
         self._config = config
         self._db_path = db_path
         self._heartbeat_path = Path(heartbeat_path)
         self._clock = clock
+        self._exchange = exchange
+        self._primary = telegram_sender is None
+        is_binance = exchange == "binance"
+        if is_binance:
+            symbol = config.symbol
+            size_threshold = Decimal(str(config.thresholds.size_threshold_btc))
+            record_min_qty = Decimal(str(config.wall_tracker.record_min_qty_btc))
+            band_pct = Decimal(0)  # 바이낸스는 거래소단 PERCENT_PRICE 필터가 대역을 담당
+            venue_label = None  # dispatcher 기본값 = 기존 문자열
+        else:
+            if exchange not in config.exchanges:
+                raise ValueError(f"config exchanges 섹션에 '{exchange}'가 없습니다")
+            exch_cfg = config.exchanges[exchange]
+            symbol = exch_cfg.symbol
+            size_threshold = Decimal(str(exch_cfg.size_threshold_btc))
+            record_min_qty = Decimal(str(exch_cfg.record_min_qty_btc))
+            band_pct = Decimal(str(exch_cfg.band_pct))
+            venue_label = f"{symbol} ({exchange.capitalize()})"
+        self._symbol = symbol
 
         self.order_book = OrderBook()
         self.trade_window = TradeWindow(config.thresholds.window_seconds)
         # 판정 경로 float 금지 (PRD §7) — config 수치는 여기서 Decimal로 변환
         self.wall_registry = WallRegistry(
-            record_min_qty=Decimal(str(config.wall_tracker.record_min_qty_btc)),
-            size_threshold=Decimal(str(config.thresholds.size_threshold_btc)),
+            record_min_qty=record_min_qty,
+            size_threshold=size_threshold,
             clock=clock,
+            band_pct=band_pct,
+            mid_price_supplier=None if is_binance else self._mid_price,
         )
-        # 벽 레벨은 top-20 창 이탈에도 누적 보존 (§7 v1.4 예외 — level_tracker docstring)
+        # 벽 레벨은 top-20 창 이탈에도 누적 보존 (§7 v1.4 예외 — level_tracker docstring).
+        # 비-바이낸스는 top-1 합성 스냅샷이라 체결 선행 시 엔트리 생성 (v1.16, §5.5)
         self.level_tracker = LevelTracker(
-            retain=lambda side, price: self.wall_registry.get(side, price) is not None
+            retain=lambda side, price: self.wall_registry.get(side, price) is not None,
+            create_on_trade_for_retained=not is_binance,
         )
-        self.tracker = SessionEpochTracker(
-            symbol=config.symbol,
-            stale_seconds=config.watchdog.stale_seconds,
-            trade_stale_seconds=config.watchdog.trade_stale_seconds,
-            clock=monotonic,
-        )
-        self.ws_client = BinanceWSClient(
-            config.symbol,
-            on_event=self.on_event,
-            on_connected=self.on_connected,
-            on_disconnected=self.on_disconnected,
-        )
+        if is_binance:
+            self.tracker = SessionEpochTracker(
+                symbol=symbol,
+                stale_seconds=config.watchdog.stale_seconds,
+                trade_stale_seconds=config.watchdog.trade_stale_seconds,
+                clock=monotonic,
+            )
+            self.ws_client = BinanceWSClient(
+                symbol,
+                on_event=self.on_event,
+                on_connected=self.on_connected,
+                on_disconnected=self.on_disconnected,
+            )
+        else:
+            # Coinbase (PRD §5.5): ticker=depth류지만 체결 주도 push라 느슨한 임계,
+            # l2는 시퀀스가 없어 U/u 검사 대신 match trade_id 연속성 검사
+            ticker_s, matches_s, l2_s = coinbase_stream_names(symbol)
+            self.tracker = SessionEpochTracker(
+                symbol=symbol,
+                stale_seconds=config.watchdog.stale_seconds,
+                trade_stale_seconds=config.watchdog.trade_stale_seconds,
+                clock=monotonic,
+                streams=(ticker_s, matches_s, l2_s),
+                stale_thresholds={
+                    l2_s: config.watchdog.stale_seconds,
+                    ticker_s: config.watchdog.trade_stale_seconds,
+                    matches_s: config.watchdog.trade_stale_seconds,
+                },
+                check_diff_continuity=False,
+                check_trade_continuity=True,
+            )
+            self.ws_client = CoinbaseWSClient(
+                symbol,
+                on_event=self.on_event,
+                on_connected=self.on_connected,
+                on_disconnected=self.on_disconnected,
+            )
         self.d1 = D1Detector(
-            size_threshold=Decimal(str(config.thresholds.size_threshold_btc)),
+            size_threshold=size_threshold,
             persist_seconds=config.thresholds.persist_seconds,
             exit_ratio=Decimal(str(config.thresholds.exit_ratio)),
             fill_attribution=Decimal(str(config.thresholds.fill_attribution)),
             cum_traded_lookup=self._cum_traded_at_level,
             clock=clock,
         )
-        self.volume_baseline = VolumeBaseline(config.thresholds.vol_baseline_hours)
-        self.d2 = D2Detector(
-            vol_floor=Decimal(str(config.thresholds.vol_floor_btc)),
-            vol_multiplier=Decimal(str(config.thresholds.vol_multiplier)),
-            exit_ratio=Decimal(str(config.thresholds.episode_exit_ratio)),
-            merge_seconds=config.thresholds.episode_merge_minutes * 60.0,
-            directional_ratio=Decimal(str(config.thresholds.delta_directional_ratio)),
-            balanced_ratio=Decimal(str(config.thresholds.delta_balanced_ratio)),
-            absorb_delta_min=Decimal(str(config.thresholds.summary_absorb_delta_min)),
-            move_min_pct=Decimal(str(config.thresholds.summary_move_min_pct)),
-            window_seconds=config.thresholds.window_seconds,
-            window=self.trade_window,
-            baseline=self.volume_baseline,
-            monotonic=monotonic,
+        # D2·D4·W·candles는 바이낸스 전용 (PRD §5.5 — 100ms 근접북 케이던스 의존)
+        self.volume_baseline = VolumeBaseline(config.thresholds.vol_baseline_hours) if is_binance else None
+        self.d2 = (
+            D2Detector(
+                vol_floor=Decimal(str(config.thresholds.vol_floor_btc)),
+                vol_multiplier=Decimal(str(config.thresholds.vol_multiplier)),
+                exit_ratio=Decimal(str(config.thresholds.episode_exit_ratio)),
+                merge_seconds=config.thresholds.episode_merge_minutes * 60.0,
+                directional_ratio=Decimal(str(config.thresholds.delta_directional_ratio)),
+                balanced_ratio=Decimal(str(config.thresholds.delta_balanced_ratio)),
+                absorb_delta_min=Decimal(str(config.thresholds.summary_absorb_delta_min)),
+                move_min_pct=Decimal(str(config.thresholds.summary_move_min_pct)),
+                window_seconds=config.thresholds.window_seconds,
+                window=self.trade_window,
+                baseline=self.volume_baseline,
+                monotonic=monotonic,
+            )
+            if is_binance
+            else None
         )
         self.contact = ContactEpisodeTracker(
             pierce_persist_snapshots=config.thresholds.pierce_persist_snapshots
@@ -173,13 +240,17 @@ class MonitorService:
             absorption_min_pct=Decimal(str(config.thresholds.absorption_min_pct)),
             cum_traded_lookup=self._cum_traded_at_level,
         )
-        self.d4 = D4Detector(
-            absorb_multiple=Decimal(str(config.thresholds.absorb_multiple)),
-            absorb_progress_step=Decimal(str(config.thresholds.absorb_progress_step)),
-            absorb_min_events=config.thresholds.absorb_min_events,
-            refill_window_ms=config.thresholds.refill_window_ms,
-            clock=clock,
-            monotonic=monotonic,
+        self.d4 = (
+            D4Detector(
+                absorb_multiple=Decimal(str(config.thresholds.absorb_multiple)),
+                absorb_progress_step=Decimal(str(config.thresholds.absorb_progress_step)),
+                absorb_min_events=config.thresholds.absorb_min_events,
+                refill_window_ms=config.thresholds.refill_window_ms,
+                clock=clock,
+                monotonic=monotonic,
+            )
+            if is_binance
+            else None
         )
         self.d5 = D5Detector(
             realize_pct=Decimal(str(config.thresholds.realize_pct)),
@@ -189,18 +260,26 @@ class MonitorService:
         )
         # W 주시 관측기 (PRD §8 W v1.13) — 디텍터 체인과 독립 병행 경로.
         # 계측·회차는 epoch 게이트 밖(상태 적재), 봉 판정만 gap 오염으로 보류
-        self.candles = CandleAssembler(config.watch.confirm_timeframe)
-        self.watch = WatchLevelObserver(
-            contact_band_pct=Decimal(str(config.watch.contact_band_pct)),
-            confirm_timeframe=config.watch.confirm_timeframe,
-            confirm_closes=config.watch.confirm_closes,
-            invalidate_buffer_pct=Decimal(str(config.watch.invalidate_buffer_pct)),
-            report_interval_seconds=config.watch.report_interval_seconds,
-            clock=clock,
-            monotonic=monotonic,
+        self.candles = CandleAssembler(config.watch.confirm_timeframe) if is_binance else None
+        self.watch = (
+            WatchLevelObserver(
+                contact_band_pct=Decimal(str(config.watch.contact_band_pct)),
+                confirm_timeframe=config.watch.confirm_timeframe,
+                confirm_closes=config.watch.confirm_closes,
+                invalidate_buffer_pct=Decimal(str(config.watch.invalidate_buffer_pct)),
+                report_interval_seconds=config.watch.report_interval_seconds,
+                clock=clock,
+                monotonic=monotonic,
+            )
+            if is_binance
+            else None
         )
         self._telegram_token = telegram_token
-        self.telegram = TelegramSender(telegram_token, config.telegram.chat_id)
+        self.telegram = (
+            telegram_sender
+            if telegram_sender is not None
+            else TelegramSender(telegram_token, config.telegram.chat_id)
+        )
         self._outbox: AlertsOutboxStore | None = None
         self.dispatcher = AlertDispatcher(
             config,
@@ -210,6 +289,7 @@ class MonitorService:
             outbox=None,
             d1_streak_gate=self._appeared_streak_unalerted,
             wall_lookup=self.wall_registry.walls,
+            venue_label=venue_label,
         )
         self._store: WallStore | None = None
         self._watch_store: WatchStore | None = None
@@ -224,20 +304,29 @@ class MonitorService:
         level = self.level_tracker.get(side, price)
         return level.cum_traded_at_level if level is not None else Decimal(0)
 
+    def _mid_price(self) -> Decimal | None:
+        """레지스트리 등록 대역 게이트용 mid (v1.16, §5.5) — ticker 합성 스냅샷 기반."""
+        bid, ask = self.order_book.best_bid, self.order_book.best_ask
+        if bid is None or ask is None:
+            return None
+        return (bid + ask) / 2
+
     # ── 기동/종료 ──────────────────────────────────────────────
 
     def startup(self) -> None:
-        self._store = WallStore(self._db_path)
+        self._store = WallStore(self._db_path, exchange=self._exchange)
         restored = self._store.load()
         if restored:
             self.wall_registry.restore(restored)
             # 재시작 = 청취 공백 → 전체 unconfirmed (PRD §12.1 규칙 1)
             self.wall_registry.mark_all_unconfirmed()
             self._store.mark_all_unconfirmed(since=self._clock())
-        logger.info("wall registry restored", extra={"count": len(restored)})
+        logger.info(
+            "wall registry restored", extra={"count": len(restored), "exchange": self._exchange}
+        )
 
         # D5 확정/추정 알림 outbox (PRD §9.4) — 같은 db 파일에 별도 테이블
-        self._outbox = AlertsOutboxStore(self._db_path)
+        self._outbox = AlertsOutboxStore(self._db_path, exchange=self._exchange)
         self.dispatcher.set_outbox(self._outbox)
         unsent = self._outbox.load_unsent()
         for rowid, text in unsent:
@@ -245,45 +334,47 @@ class MonitorService:
         if unsent:
             logger.info("unsent alerts requeued from outbox", extra={"count": len(unsent)})
 
-        # W 주시 레벨 복원 (PRD §12.2 — "상태 미복원" 예외 ②) + kv (§9.5 offset)
-        self._watch_store = WatchStore(self._db_path)
-        self._kv = KVStore(self._db_path)
-        self.dispatcher.set_watch_store(self._watch_store)
-        unsent_finals = 0
-        restored_watches = 0
-        for row in self._watch_store.load():
-            if row.final_text is not None:
-                # 무효화 확정 후 발송 확인 전 크래시 — 최종 리포트 재전송 (§9.4)
-                store = self._watch_store
-                self.telegram.enqueue(
-                    row.final_text,
-                    on_sent=lambda lo=row.lo, hi=row.hi: store.delete(lo, hi),
+        # W 주시 레벨 복원 (PRD §12.2 — "상태 미복원" 예외 ②) + kv (§9.5 offset).
+        # W는 바이낸스 전용 (§5.5 v1.16) — 비-바이낸스 파이프라인은 스토어도 안 연다
+        if self.watch is not None:
+            self._watch_store = WatchStore(self._db_path)
+            self._kv = KVStore(self._db_path)
+            self.dispatcher.set_watch_store(self._watch_store)
+            unsent_finals = 0
+            restored_watches = 0
+            for row in self._watch_store.load():
+                if row.final_text is not None:
+                    # 무효화 확정 후 발송 확인 전 크래시 — 최종 리포트 재전송 (§9.4)
+                    store = self._watch_store
+                    self.telegram.enqueue(
+                        row.final_text,
+                        on_sent=lambda lo=row.lo, hi=row.hi: store.delete(lo, hi),
+                    )
+                    unsent_finals += 1
+                    continue
+                self.watch.restore(
+                    lo=row.lo,
+                    hi=row.hi,
+                    literal=row.literal,
+                    registered_at=row.registered_at,
+                    role=row.role,
+                    episode_num=row.episode_num,
+                    first_contact_at=row.first_contact_at,
+                    cum_buy=row.cum_buy,
+                    cum_sell=row.cum_sell,
+                    excursion_low=row.excursion_low,
+                    excursion_high=row.excursion_high,
                 )
-                unsent_finals += 1
-                continue
-            self.watch.restore(
-                lo=row.lo,
-                hi=row.hi,
-                literal=row.literal,
-                registered_at=row.registered_at,
-                role=row.role,
-                episode_num=row.episode_num,
-                first_contact_at=row.first_contact_at,
-                cum_buy=row.cum_buy,
-                cum_sell=row.cum_sell,
-                excursion_low=row.excursion_low,
-                excursion_high=row.excursion_high,
+                restored_watches += 1
+            logger.info(
+                "watch levels restored",
+                extra={"count": restored_watches, "unsent_finals": unsent_finals},
             )
-            restored_watches += 1
-        logger.info(
-            "watch levels restored",
-            extra={"count": restored_watches, "unsent_finals": unsent_finals},
-        )
 
         # 디텍터 이벤트·인텐트 기록 (PRD §12, M6 — 튜닝/사후 분석용, 복원 아님).
         # 이전 런에서 종국 기록 없이 남은(크래시) 열린 인텐트 행을 INTERRUPTED 마킹
-        self._event_store = EventStore(self._db_path)
-        self._intent_store = IntentStore(self._db_path)
+        self._event_store = EventStore(self._db_path, exchange=self._exchange)
+        self._intent_store = IntentStore(self._db_path, exchange=self._exchange)
         self._run_started_at = self._clock()
         interrupted = self._intent_store.mark_interrupted_at_startup(self._clock())
         if interrupted:
@@ -297,10 +388,12 @@ class MonitorService:
                 group.create_task(self.ws_client.run())
                 group.create_task(self._staleness_loop())
                 group.create_task(self._prune_loop())
-                group.create_task(self._wall_report_loop())
-                group.create_task(self._heartbeat_loop())
-                group.create_task(self._telegram_commands_loop())
-                group.create_task(self.telegram.run())
+                if self.watch is not None:  # 바이낸스 전용 — 호가벽 리포트·수신 명령 (§5.5)
+                    group.create_task(self._wall_report_loop())
+                    group.create_task(self._telegram_commands_loop())
+                if self._primary:  # 프로세스 공유 자원 — sender 소유 인스턴스만
+                    group.create_task(self._heartbeat_loop())
+                    group.create_task(self.telegram.run())
         finally:
             if self._store is not None:
                 self._store.close()
@@ -317,6 +410,8 @@ class MonitorService:
 
     async def _bootstrap_baseline(self) -> None:
         """D2 기준선 워밍업 (PRD §8 D2 v1.3) — 실패해도 기동은 계속, D2만 보류."""
+        if self.volume_baseline is None:  # D2 없는 파이프라인 (§5.5) — 바이낸스 REST 호출도 없음
+            return
         minutes = int(self._config.thresholds.vol_baseline_hours * 60)
         try:
             bars = await fetch_minute_volumes(self._config.symbol, minutes)
@@ -359,29 +454,34 @@ class MonitorService:
                 )
                 # D4 틱 마감 — 관통/반등으로 방금 끝난 episode는 위에서 이미
                 # 틱 상태가 소거돼 이번 틱 누적에서 자연 제외된다 (비관통 게이트)
-                for d4_event in self.d4.on_depth_snapshot(event, self.contact.active()):
-                    self._emit(d4_event)
+                if self.d4 is not None:
+                    for d4_event in self.d4.on_depth_snapshot(event, self.contact.active()):
+                        self._emit(d4_event)
                 for d5_event in self.d5.evaluate():
                     self._route_d5_live(d5_event)
         elif isinstance(event, AggTradeEvent):
             self.trade_window.add(event)
             self.level_tracker.record_trade(event)
-            self.volume_baseline.add(event.exchange_time_ms, event.qty)
+            if self.volume_baseline is not None:
+                self.volume_baseline.add(event.exchange_time_ms, event.qty)
             # W 주시 관측 (PRD §8 W v1.13) — epoch 게이트 밖: 계측은 상태 적재로
             # 분류되어 aggTrade가 살아있는 한 계속 (§5.4). 봉 마감 판정을 먼저
             # 소비 — 새 버킷의 첫 체결은 다음 봉 소속 (candles docstring 계약)
-            closed_candle = self.candles.on_trade(event)
-            if closed_candle is not None:
-                for watch_event in self.watch.on_candle_close(closed_candle):
+            if self.candles is not None and self.watch is not None:
+                closed_candle = self.candles.on_trade(event)
+                if closed_candle is not None:
+                    for watch_event in self.watch.on_candle_close(closed_candle):
+                        self._emit(watch_event)
+                for watch_event in self.watch.on_trade(event):
                     self._emit(watch_event)
-            for watch_event in self.watch.on_trade(event):
-                self._emit(watch_event)
             # 판정은 epoch 활성 중에만 — 상태 적재는 위에서 이미 수행 (PRD §5.4)
             if self.tracker.epoch_active:
                 self._handle_episode_ends(self.contact.on_trade(event))  # 체결가 관통
-                self.d4.on_trade(event)
-                for d2_event in self.d2.on_trade(event):
-                    self._emit(d2_event)
+                if self.d4 is not None:
+                    self.d4.on_trade(event)
+                if self.d2 is not None:
+                    for d2_event in self.d2.on_trade(event):
+                        self._emit(d2_event)
                 for d5_event in self.d5.evaluate():
                     self._route_d5_live(d5_event)
         elif isinstance(event, DiffDepthEvent):
@@ -400,7 +500,8 @@ class MonitorService:
                         "qty": str(wall.last_qty),
                     },
                 )
-                self.d4.on_wall_registered(wall)
+                if self.d4 is not None:
+                    self.d4.on_wall_registered(wall)
             for removal in removals:
                 logger.info(
                     "wall removed",
@@ -412,9 +513,10 @@ class MonitorService:
                         "peak_qty": str(removal.wall.peak_qty),
                     },
                 )
-                d4_closed = self.d4.on_wall_removed(removal)
-                if d4_closed is not None:
-                    self._emit(d4_closed)
+                if self.d4 is not None:
+                    d4_closed = self.d4.on_wall_removed(removal)
+                    if d4_closed is not None:
+                        self._emit(d4_closed)
             if self.tracker.epoch_active:
                 # 소멸 레벨의 episode를 먼저 REMOVED 종료 — D3 확정 판정은 D1 등록
                 # 해제(아래 라우팅) 전에 이뤄져야 한다 (모듈 docstring 배선 순서)
@@ -441,9 +543,10 @@ class MonitorService:
             # W 주기 리포트 (PRD §8 W) — epoch 게이트 밖 (공백 중에도 계측·보고는
             # 계속, 공백 플래그로 표기). 별도 asyncio 태스크가 아닌 동기 on_tick —
             # replay 결정성 (D2 on_tick과 동일 패턴, 계획 결정)
-            for watch_event in self.watch.on_tick():
-                self._emit(watch_event)
-            self._flush_watches()
+            if self.watch is not None:
+                for watch_event in self.watch.on_tick():
+                    self._emit(watch_event)
+                self._flush_watches()
             # D1 지속 타이머 게이트 — diff 이벤트가 안 와도 PERSIST 경과로 발화 (PRD §8 D1)
             if self.tracker.epoch_active:
                 for d1_event in self.d1.evaluate(self.wall_registry.walls()):
@@ -451,8 +554,9 @@ class MonitorService:
                 # D2 에피소드 종료 판정 — 체결이 끊겨도 진행 (PRD §8 D2 v1.3)
                 # (D5는 여기서 호출 안 함 — TTL 폐지(PRD v1.5) 후 시간 경과만으로
                 # 바뀌는 판정이 없고, 실현률은 체결/스냅샷 이벤트 경로가 갱신)
-                for d2_event in self.d2.on_tick():
-                    self._emit(d2_event)
+                if self.d2 is not None:
+                    for d2_event in self.d2.on_tick():
+                        self._emit(d2_event)
 
     async def _wall_report_loop(self) -> None:
         """호가벽 정기 리포트 — 벽시계 정시 경계 발송, epoch 활성 중에만 (현재가는 depth 기반).
@@ -487,7 +591,7 @@ class MonitorService:
     def _flush_watches(self) -> None:
         """W 누적 카운터 flush (PRD §12.2) — 회차 경계/리포트/등록 등 상태 전이
         시에만 (`take_flush_pending`). 리포트 발송 틱과 같은 주기라 비용 무시 가능."""
-        if self._watch_store is None or not self.watch.take_flush_pending():
+        if self.watch is None or self._watch_store is None or not self.watch.take_flush_pending():
             return
         flushed_at = self._clock()
         for data in self.watch.watches():
@@ -653,7 +757,8 @@ class MonitorService:
         for end in ends:
             for d3_event in self.d3.on_episode_end(end):
                 self._emit(d3_event)
-            self.d4.on_episode_end(end)
+            if self.d4 is not None:
+                self.d4.on_episode_end(end)
 
     # ── 헬스/epoch 통지 처리 ───────────────────────────────────
 
@@ -663,25 +768,30 @@ class MonitorService:
                 logger.info("epoch started", extra={"epoch_id": notice.epoch_id})
                 # D4 스트릭 재개시 — 활성 벽 전체 새 스트릭, R = 현재 last_qty
                 # (PRD §8 D4 v1.12 — 복원·epoch 생존 벽의 추적 사각 방지)
-                self.d4.on_epoch_start(self.wall_registry.walls())
+                if self.d4 is not None:
+                    self.d4.on_epoch_start(self.wall_registry.walls())
             elif isinstance(notice, EpochEnded):
                 # 판정 전제 붕괴 — D1 활성/후보, D2 진행 중 에피소드, 접촉 episode·
                 # D3 등록·D4 스트릭 누적·D5 활성 인텐트 폐기 (PRD §5.4.
                 # trade_window·volume_baseline은 상태 계층이라 유지)
                 self.d1.reset()
-                if self.d2.episode_active:
-                    logger.warning("d2 episode discarded on epoch end")
-                self.d2.reset()
+                if self.d2 is not None:
+                    if self.d2.episode_active:
+                        logger.warning("d2 episode discarded on epoch end")
+                    self.d2.reset()
                 self.contact.reset()
                 self.d3.reset()
-                for d4_event in self.d4.reset():
-                    self._emit(d4_event)  # DEFENSE_INTERRUPTED — 로그만 (dispatcher 미발송)
+                if self.d4 is not None:
+                    for d4_event in self.d4.reset():
+                        self._emit(d4_event)  # DEFENSE_INTERRUPTED — 로그만 (dispatcher 미발송)
                 for d5_event in self.d5.reset():
                     self._route_d5_terminal(d5_event)
                 # W는 리셋하지 않는다 (PRD §5.4 v1.13 — 계측은 적재로서 지속).
                 # 공백 낀 봉 오염 + 리포트 공백 플래그만
-                self.candles.mark_gap()
-                self.watch.on_epoch_end()
+                if self.candles is not None:
+                    self.candles.mark_gap()
+                if self.watch is not None:
+                    self.watch.on_epoch_end()
                 logger.warning(
                     "epoch ended",
                     extra={"epoch_id": notice.epoch_id, "reason": notice.reason},

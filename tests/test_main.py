@@ -26,7 +26,7 @@ def test_main_loads_config_and_starts_service(tmp_path, monkeypatch):
     launched = []
 
     def fake_asyncio_run(coro):
-        assert coro.cr_code.co_name == "run"  # MonitorService.run 코루틴
+        assert coro.cr_code.co_name == "run_all"  # 전 파이프라인 러너 (M8 — 바이낸스 + exchanges)
         coro.close()
         launched.append(True)
 

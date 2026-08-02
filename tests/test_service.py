@@ -815,3 +815,91 @@ def test_watch_unwatch_command_final_report(tmp_path):
     # 미등록 해소는 오류 안내
     assert "주시 중이 아닙니다" in svc._handle_unwatch_command(Decimal(1), Decimal(2), "1-2")
     svc._store.close()
+
+
+# ---- M8 멀티 거래소 파이프라인 (PRD §5.5 v1.16) ----
+
+from order_monitor.ingestion.coinbase import coinbase_stream_names  # noqa: E402
+
+CB_TICKER, CB_MATCHES, CB_L2 = coinbase_stream_names("BTC-USD")
+
+
+def make_coinbase_service(config, tmp_path):
+    svc = MonitorService(
+        config,
+        db_path=tmp_path / "monitor.db",
+        telegram_token="test-token",
+        exchange="coinbase",
+    )
+    svc.startup()
+    return svc
+
+
+def cb_ticker_event(bid="62900", ask="62901", mono=0.0):
+    return DepthSnapshot(
+        last_update_id=1,
+        bids=((Decimal(bid), Decimal("0.5")),),
+        asks=((Decimal(ask), Decimal("0.5")),),
+        local_monotonic_receive_time=mono,
+    )
+
+
+def start_coinbase_feed(svc):
+    svc.on_connected()
+    svc.on_event(CB_TICKER, cb_ticker_event())
+    svc.on_event(CB_MATCHES, agg_event(price="62900"))
+    svc.on_event(CB_L2, diff_event(0, 0, bids=[("60000", "600")]))
+
+
+def test_coinbase_service_gates_binance_only_components(tmp_path):
+    svc = make_coinbase_service(load_config(EXAMPLE_CONFIG), tmp_path)
+    assert svc.d2 is None and svc.d4 is None
+    assert svc.watch is None and svc.candles is None and svc.volume_baseline is None
+    assert svc.d1 is not None and svc.d3 is not None and svc.d5 is not None
+    svc._store.close()
+
+
+def test_coinbase_pipeline_epoch_and_wall_registration(tmp_path):
+    svc = make_coinbase_service(load_config(EXAMPLE_CONFIG), tmp_path)
+    start_coinbase_feed(svc)
+    assert svc.tracker.epoch_active
+    # exchanges.coinbase 임계 적용 — 관측 플로어 50: 600 BTC 벽 등록
+    wall = svc.wall_registry.get(Side.BUY, Decimal("60000"))
+    assert wall is not None and wall.last_qty == Decimal("600")
+    svc._store.close()
+
+
+def test_coinbase_d1_alert_carries_venue_label(tmp_path):
+    svc = make_coinbase_service(config_with(persist_seconds=1e-9), tmp_path)
+    start_coinbase_feed(svc)
+    # 600 ≥ size_threshold(500) — persist 경과 후 다음 diff에서 APPEARED 발화
+    svc.on_event(CB_L2, diff_event(0, 0, bids=[("60000.5", "70")], mono=0.1))
+    assert svc.telegram.pending() == 1
+    text = svc.telegram._queue.get_nowait()[0]
+    assert "심볼: BTC-USD (Coinbase)" in text
+    assert "Binance" not in text
+    svc._store.close()
+
+
+def test_coinbase_band_gate_blocks_far_garbage_in_pipeline(tmp_path):
+    svc = make_coinbase_service(load_config(EXAMPLE_CONFIG), tmp_path)
+    start_coinbase_feed(svc)
+    # mid ~62900.5, band ±20% — $0.01의 65,000 BTC 쓰레기 주문 (실측 사례) 미등록
+    svc.on_event(CB_L2, diff_event(0, 0, bids=[("0.01", "65000")], mono=0.2))
+    assert svc.wall_registry.get(Side.BUY, Decimal("0.01")) is None
+    svc._store.close()
+
+
+def test_binance_and_coinbase_walls_isolated_in_same_db(tmp_path):
+    config = load_config(EXAMPLE_CONFIG)
+    binance = make_service(config, tmp_path)
+    coinbase = make_coinbase_service(config, tmp_path)
+    start_feed(binance)  # 60000에 1200 BTC (binance)
+    start_coinbase_feed(coinbase)  # 60000에 600 BTC (coinbase)
+
+    assert WallStore(tmp_path / "monitor.db").load()[0].last_qty == Decimal("1200")
+    assert WallStore(tmp_path / "monitor.db", exchange="coinbase").load()[0].last_qty == Decimal(
+        "600"
+    )
+    binance._store.close()
+    coinbase._store.close()

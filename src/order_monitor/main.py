@@ -30,17 +30,37 @@ def main() -> None:
     config = load_config(args.config)
     logger.info(
         "config loaded",
-        extra={"symbol": config.symbol},
+        extra={"symbol": config.symbol, "exchanges": sorted(config.exchanges)},
     )
 
+    # 바이낸스 = 프라이머리 (공유 sender·heartbeat·수신 명령 소유), 신규 거래소는
+    # 독립 파이프라인으로 병행 (M8, PRD §5.5 — exchanges 섹션 부재 시 바이낸스 단독)
     service = MonitorService(
         config,
         db_path=args.db_file,
         telegram_token=telegram_token,
         heartbeat_path=args.heartbeat_file,
     )
+    services = [service]
+    for exchange in sorted(config.exchanges):
+        services.append(
+            MonitorService(
+                config,
+                db_path=args.db_file,
+                telegram_token=telegram_token,
+                heartbeat_path=args.heartbeat_file,
+                exchange=exchange,
+                telegram_sender=service.telegram,
+            )
+        )
+
+    async def run_all() -> None:
+        async with asyncio.TaskGroup() as group:
+            for svc in services:
+                group.create_task(svc.run())
+
     try:
-        asyncio.run(service.run())
+        asyncio.run(run_all())
     except KeyboardInterrupt:
         logger.info("shutdown requested")
 

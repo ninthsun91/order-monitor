@@ -272,3 +272,24 @@ def test_tracked_wall_updates_and_tombstone_ignore_band():
     removals = r.apply_diff(diff(bids=[("60000", "0")])).removals
     assert len(removals) == 1 and removals[0].reason is RemovalReason.TOMBSTONE
     assert len(r) == 0
+
+
+def test_band_snapshot_derived_mid_rejects_garbage_before_ticker():
+    # 기동 직후: supplier mid 미확보 상태에서 양측 full snapshot 도착 —
+    # 이벤트 자체 유도 mid로 원거리 쓰레기 주문 등록을 거부해야 한다 (기동 오알림 방어)
+    r = WallRegistry(
+        record_min_qty=FLOOR,
+        size_threshold=THRESHOLD,
+        clock=FakeClock(),
+        band_pct=Decimal("0.20"),
+        mid_price_supplier=lambda: None,
+    )
+    result = r.apply_diff(
+        diff(
+            bids=[("62900", "1.0"), ("60000", "150"), ("0.01", "65000")],
+            asks=[("62901", "1.0"), ("65000", "200")],
+        )
+    )
+    prices = {w.price for w in result.registrations}
+    assert prices == {Decimal("60000"), Decimal("65000")}
+    assert r.get(Side.BUY, Decimal("0.01")) is None

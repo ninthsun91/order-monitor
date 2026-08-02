@@ -82,18 +82,30 @@ class WallRegistry:
         self._walls: dict[tuple[Side, Decimal], Wall] = {}
 
     def apply_diff(self, event: DiffDepthEvent) -> DiffResult:
+        # 이벤트 자체 유도 mid (v1.16) — 기동 직후 full snapshot이 첫 ticker보다
+        # 먼저 오면 supplier mid가 없어 대역 게이트가 무력화되고, $0.01급 쓰레기
+        # 주문이 D1 임계까지 넘겨 기동마다 오알림이 나는 경로의 방어. 양측이 있는
+        # 이벤트에서 (최고 bid + 최저 ask)/2 — snapshot은 정확한 best, l2update는
+        # 근사지만 supplier가 이미 있는 국면이라 폴백이 쓰일 일이 없다
+        event_mid: Decimal | None = None
+        if self._band_pct > 0 and event.bids and event.asks:
+            event_mid = (
+                max(price for price, _ in event.bids) + min(price for price, _ in event.asks)
+            ) / 2
         registrations: list[Wall] = []
         removals: list[WallRemoval] = []
         for side, levels in ((Side.BUY, event.bids), (Side.SELL, event.asks)):
             for price, qty in levels:
-                outcome = self._apply_level(side, price, qty)
+                outcome = self._apply_level(side, price, qty, fallback_mid=event_mid)
                 if isinstance(outcome, Wall):
                     registrations.append(outcome)
                 elif isinstance(outcome, WallRemoval):
                     removals.append(outcome)
         return DiffResult(registrations=registrations, removals=removals)
 
-    def _apply_level(self, side: Side, price: Decimal, qty: Decimal) -> Wall | WallRemoval | None:
+    def _apply_level(
+        self, side: Side, price: Decimal, qty: Decimal, fallback_mid: Decimal | None = None
+    ) -> Wall | WallRemoval | None:
         now = self._clock()
         key = (side, price)
         wall = self._walls.get(key)
@@ -102,7 +114,7 @@ class WallRegistry:
             # 등록 게이트는 신규 가격에만 적용 (PRD §8 D1 소멸 규칙)
             if qty < self._record_min_qty:
                 return None
-            if not self._within_band(price):
+            if not self._within_band(price, fallback_mid):
                 return None
             wall = Wall(
                 price=price,
@@ -139,13 +151,15 @@ class WallRegistry:
             wall.first_seen_above_threshold = None
         return None
 
-    def _within_band(self, price: Decimal) -> bool:
+    def _within_band(self, price: Decimal, fallback_mid: Decimal | None = None) -> bool:
         """등록 가격대역 게이트 (v1.16, PRD §5.5) — 신규 등록 전용."""
-        if self._band_pct <= 0 or self._mid_price_supplier is None:
+        if self._band_pct <= 0:
             return True
-        mid = self._mid_price_supplier()
+        mid = self._mid_price_supplier() if self._mid_price_supplier is not None else None
         if mid is None:
-            return True  # 기동 직후 mid 미확보 — 관측 우선
+            mid = fallback_mid  # 이벤트 자체 유도 mid (apply_diff 주석)
+        if mid is None:
+            return True  # 어느 쪽 mid도 미확보 (단측 l2update 등) — 관측 우선
         return mid * (1 - self._band_pct) <= price <= mid * (1 + self._band_pct)
 
     def mark_all_unconfirmed(self) -> None:
