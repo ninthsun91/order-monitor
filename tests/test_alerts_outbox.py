@@ -70,3 +70,46 @@ def test_count_includes_sent_rows(store):
     store.record(Side.SELL, Decimal("62000"), "execution_inferred_above", "text-2", 2000.0)
     assert store.count() == 2
     assert len(store.load_unsent()) == 1
+
+
+def test_migration_v1_16_preserves_unsent_rows(tmp_path):
+    # v1.15 스키마(UNIQUE에 exchange 없음) — 미발송 행이 id 보존 복사로 살아남는다
+    import sqlite3
+
+    path = tmp_path / "v115.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE alerts_outbox (
+            id INTEGER PRIMARY KEY, side TEXT NOT NULL, price TEXT NOT NULL,
+            terminal_state TEXT NOT NULL, text TEXT NOT NULL,
+            sent INTEGER NOT NULL DEFAULT 0, recorded_at REAL NOT NULL,
+            UNIQUE (side, price, terminal_state, recorded_at))"""
+    )
+    conn.execute(
+        "INSERT INTO alerts_outbox (id, side, price, terminal_state, text, sent, recorded_at)"
+        " VALUES (7, 'buy', '61000', 'execution_confirmed', 'text-7', 0, 1000.0)"
+    )
+    conn.commit()
+    conn.close()
+
+    s = AlertsOutboxStore(path)
+    assert s.load_unsent() == [(7, "text-7")]
+    s.mark_sent(7)
+    assert s.load_unsent() == []
+    s.close()
+
+
+def test_exchange_isolation(tmp_path):
+    # 같은 (side, price, state, recorded_at)이라도 거래소가 다르면 별개 행
+    path = tmp_path / "multi.db"
+    binance = AlertsOutboxStore(path)
+    coinbase = AlertsOutboxStore(path, exchange="coinbase")
+
+    b_id = binance.record(Side.BUY, Decimal("61000"), "execution_confirmed", "b-text", 1000.0)
+    c_id = coinbase.record(Side.BUY, Decimal("61000"), "execution_confirmed", "c-text", 1000.0)
+    assert b_id is not None and c_id is not None
+
+    assert binance.load_unsent() == [(b_id, "b-text")]
+    assert coinbase.load_unsent() == [(c_id, "c-text")]
+    binance.close()
+    coinbase.close()

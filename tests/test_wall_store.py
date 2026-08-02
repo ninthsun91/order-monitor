@@ -183,3 +183,60 @@ def test_prune_mirror(tmp_path):
     store.delete_walls(pruned)
     assert store.count() == 0
     store.close()
+
+
+def test_migration_v1_16_rebuilds_pk_with_exchange(tmp_path):
+    # v1.15 스키마(PK (side, price))로 만든 DB가 열리면서 재생성되고 기존 행은 binance 백필
+    import sqlite3
+
+    path = tmp_path / "v115.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE walls (
+            side TEXT NOT NULL, price TEXT NOT NULL, last_qty TEXT NOT NULL,
+            peak_qty TEXT NOT NULL, first_seen_at REAL NOT NULL,
+            first_seen_above_threshold REAL, last_seen_at REAL NOT NULL,
+            unconfirmed INTEGER NOT NULL DEFAULT 0, unconfirmed_since REAL,
+            appeared_alerted_since REAL,
+            PRIMARY KEY (side, price))"""
+    )
+    conn.execute(
+        "INSERT INTO walls VALUES"
+        " ('buy', '61000', '1200', '1300', 100.0, 100.0, 200.0, 0, NULL, 150.0)"
+    )
+    conn.commit()
+    conn.close()
+
+    s = WallStore(path)  # 기본 binance
+    loaded = s.load()
+    assert len(loaded) == 1
+    assert loaded[0].peak_qty == Decimal("1300")
+    assert loaded[0].appeared_alerted_since == 150.0
+    # PK에 exchange 포함 확인 — 같은 (side, price)를 다른 거래소로 추가 가능
+    other = WallStore(path, exchange="coinbase")
+    other.save(make_wall(qty="50"))
+    assert s.count() == 1 and other.count() == 1
+    s.close()
+    other.close()
+
+
+def test_exchange_isolation(tmp_path):
+    # 같은 DB 파일, 같은 가격 — 거래소별 행 분리, 삭제·unconfirmed 마킹 불간섭
+    path = tmp_path / "multi.db"
+    binance = WallStore(path)
+    coinbase = WallStore(path, exchange="coinbase")
+
+    binance.save(make_wall(qty="1200"))
+    coinbase.save(make_wall(qty="60"))
+
+    assert binance.load()[0].last_qty == Decimal("1200")
+    assert coinbase.load()[0].last_qty == Decimal("60")
+
+    coinbase.mark_all_unconfirmed(500.0)
+    assert binance.load()[0].unconfirmed is False
+    assert coinbase.load()[0].unconfirmed is True
+
+    coinbase.delete_walls([make_wall()])
+    assert binance.count() == 1 and coinbase.count() == 0
+    binance.close()
+    coinbase.close()

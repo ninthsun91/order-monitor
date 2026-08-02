@@ -81,3 +81,51 @@ def test_mark_interrupted_survives_reopen(tmp_path):
     assert store2.rows()[0]["state"] == D5TerminalState.INTERRUPTED.value
     assert store2.mark_interrupted_at_startup(RUN2 + 1) == 0  # 멱등 — 재마킹 없음
     store2.close()
+
+
+def test_migration_v1_16_rebuilds_pk_with_exchange(tmp_path):
+    # v1.15 스키마(PK (run_started_at, intent_id))로 만든 DB — binance 백필 + 재생성
+    import sqlite3
+
+    path = tmp_path / "v115.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE intents (
+            run_started_at REAL NOT NULL, intent_id INTEGER NOT NULL,
+            side TEXT NOT NULL, price TEXT NOT NULL, registered_qty TEXT NOT NULL,
+            registered_at REAL NOT NULL, state TEXT NOT NULL, confirmed_at REAL,
+            level_realized_rate TEXT, updated_at REAL NOT NULL,
+            PRIMARY KEY (run_started_at, intent_id))"""
+    )
+    conn.execute(
+        "INSERT INTO intents VALUES"
+        " (1000.0, 0, 'buy', '61000', '1200', 1001.0, 'active', NULL, NULL, 1001.0)"
+    )
+    conn.commit()
+    conn.close()
+
+    s = IntentStore(path)
+    rows = s.rows()
+    assert len(rows) == 1 and rows[0]["state"] == STATE_ACTIVE
+    # 파이프라인별 intent_id 카운터 충돌 방지 — 같은 (run, 0)을 다른 거래소로 등록 가능
+    other = IntentStore(path, exchange="coinbase")
+    other.register(1000.0, 0, Side.BUY, Decimal("61000"), Decimal("60"), 1001.0)
+    assert len(other.rows()) == 1
+    assert len(s.rows()) == 1
+    s.close()
+    other.close()
+
+
+def test_mark_interrupted_scoped_to_exchange(tmp_path):
+    path = tmp_path / "multi.db"
+    binance = IntentStore(path)
+    coinbase = IntentStore(path, exchange="coinbase")
+    binance.register(RUN1, 0, Side.BUY, Decimal("61000"), Decimal("1200"), 1001.0)
+    coinbase.register(RUN1, 0, Side.BUY, Decimal("61000"), Decimal("60"), 1001.0)
+
+    marked = coinbase.mark_interrupted_at_startup(2000.0)
+    assert marked == 1
+    assert binance.rows()[0]["state"] == STATE_ACTIVE
+    assert coinbase.rows()[0]["state"] == "interrupted"
+    binance.close()
+    coinbase.close()

@@ -71,3 +71,42 @@ def test_history_survives_reopen(tmp_path):
     store2 = EventStore(tmp_path / "events.db")
     assert store2.count() == 1
     store2.close()
+
+
+def test_migration_v1_16_adds_exchange_column(tmp_path):
+    # v1.15 스키마(exchange 컬럼 없음)로 만든 DB — 기존 행은 binance로 읽힌다
+    import sqlite3
+
+    path = tmp_path / "v115.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE events (
+            id INTEGER PRIMARY KEY, recorded_at REAL NOT NULL,
+            event_type TEXT NOT NULL, side TEXT, price TEXT, payload TEXT NOT NULL)"""
+    )
+    conn.execute(
+        "INSERT INTO events (recorded_at, event_type, side, price, payload)"
+        " VALUES (1000.0, 'D1Appeared', 'buy', '61000', '{}')"
+    )
+    conn.commit()
+    conn.close()
+
+    s = EventStore(path)
+    assert s.count() == 1
+    assert s.rows()[0]["event_type"] == "D1Appeared"
+    s.close()
+
+
+def test_exchange_isolation(tmp_path):
+    path = tmp_path / "multi.db"
+    binance = EventStore(path)
+    coinbase = EventStore(path, exchange="coinbase")
+
+    binance.record("D1Appeared", Side.BUY, Decimal("61000"), {"q": "1200"}, 1000.0)
+    coinbase.record("D1Appeared", Side.BUY, Decimal("61000"), {"q": "60"}, 1000.0)
+
+    assert binance.count() == 1 and coinbase.count() == 1
+    assert binance.rows()[0]["payload"] == {"q": "1200"}
+    assert coinbase.rows()[0]["payload"] == {"q": "60"}
+    binance.close()
+    coinbase.close()

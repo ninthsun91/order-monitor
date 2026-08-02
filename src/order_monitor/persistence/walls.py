@@ -6,6 +6,8 @@
 - 가격·수량은 TEXT로 저장해 Decimal 정밀도를 보존한다. 가격 키는 정규화 문자열
   (`format(d.normalize(), "f")`)로 표기 차이("61000.0" vs "61000.00000000")를 흡수한다.
 - 시각은 wall-clock epoch 초 (wall_registry와 동일 — 재시작 넘어 보존 필요)
+- (v1.16) 거래소 스코프: store 인스턴스가 `exchange`에 바인딩되어 자기 거래소 행만
+  읽고 쓴다 (PRD §12 — 파이프라인별 인스턴스, PK는 (exchange, side, price))
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from order_monitor.state.wall_registry import Wall, WallRegistry, WallRemoval
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS walls (
+    exchange TEXT NOT NULL,
     side TEXT NOT NULL,
     price TEXT NOT NULL,
     last_qty TEXT NOT NULL,
@@ -29,9 +32,14 @@ CREATE TABLE IF NOT EXISTS walls (
     unconfirmed INTEGER NOT NULL DEFAULT 0,
     unconfirmed_since REAL,
     appeared_alerted_since REAL,
-    PRIMARY KEY (side, price)
+    PRIMARY KEY (exchange, side, price)
 )
 """
+
+_DATA_COLUMNS = (
+    "side, price, last_qty, peak_qty, first_seen_at, first_seen_above_threshold,"
+    " last_seen_at, unconfirmed, unconfirmed_since, appeared_alerted_since"
+)
 
 
 def _canonical(value: Decimal) -> str:
@@ -39,14 +47,29 @@ def _canonical(value: Decimal) -> str:
 
 
 class WallStore:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, exchange: str = "binance") -> None:
+        self._exchange = exchange
         self._conn = sqlite3.connect(str(path))
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # v1.16 — 같은 DB 파일에 파이프라인별 연결이 공존 (단일 스레드라 동시 쓰기는
+        # 없지만, 짧은 잠금 겹침 방어)
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute(_SCHEMA)
-        # v1.8 마이그레이션 — 기존 배포 DB에 appeared_alerted_since 컬럼 추가
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(walls)")}
+        # v1.8 마이그레이션 — 기존 배포 DB에 appeared_alerted_since 컬럼 추가
+        # (v1.16 재생성 복사가 이 컬럼을 포함하므로 재생성보다 먼저 수행)
         if "appeared_alerted_since" not in columns:
             self._conn.execute("ALTER TABLE walls ADD COLUMN appeared_alerted_since REAL")
+        # v1.16 마이그레이션 (PRD §12) — PK (side, price) → (exchange, side, price).
+        # SQLite는 PK 변경 ALTER 불가 → 테이블 재생성, 기존 행은 'binance' 백필
+        if "exchange" not in columns:
+            self._conn.execute(_SCHEMA.replace("IF NOT EXISTS walls", "walls_new"))
+            self._conn.execute(
+                f"INSERT INTO walls_new (exchange, {_DATA_COLUMNS})"
+                f" SELECT 'binance', {_DATA_COLUMNS} FROM walls"
+            )
+            self._conn.execute("DROP TABLE walls")
+            self._conn.execute("ALTER TABLE walls_new RENAME TO walls")
         self._conn.commit()
 
     def close(self) -> None:
@@ -57,7 +80,8 @@ class WallStore:
             "SELECT side, price, last_qty, peak_qty, first_seen_at,"
             " first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since,"
             " appeared_alerted_since"
-            " FROM walls"
+            " FROM walls WHERE exchange = ?",
+            (self._exchange,),
         ).fetchall()
         return [
             Wall(
@@ -77,11 +101,11 @@ class WallStore:
 
     def upsert(self, wall: Wall) -> None:
         self._conn.execute(
-            "INSERT INTO walls (side, price, last_qty, peak_qty, first_seen_at,"
+            "INSERT INTO walls (exchange, side, price, last_qty, peak_qty, first_seen_at,"
             " first_seen_above_threshold, last_seen_at, unconfirmed, unconfirmed_since,"
             " appeared_alerted_since)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            " ON CONFLICT (side, price) DO UPDATE SET"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (exchange, side, price) DO UPDATE SET"
             " last_qty=excluded.last_qty, peak_qty=excluded.peak_qty,"
             " first_seen_at=excluded.first_seen_at,"
             " first_seen_above_threshold=excluded.first_seen_above_threshold,"
@@ -89,6 +113,7 @@ class WallStore:
             " unconfirmed_since=excluded.unconfirmed_since,"
             " appeared_alerted_since=excluded.appeared_alerted_since",
             (
+                self._exchange,
                 wall.side.value,
                 _canonical(wall.price),
                 str(wall.last_qty),
@@ -109,8 +134,8 @@ class WallStore:
 
     def delete(self, side: Side, price: Decimal) -> None:
         self._conn.execute(
-            "DELETE FROM walls WHERE side = ? AND price = ?",
-            (side.value, _canonical(price)),
+            "DELETE FROM walls WHERE exchange = ? AND side = ? AND price = ?",
+            (self._exchange, side.value, _canonical(price)),
         )
 
     def mark_all_unconfirmed(self, since: float) -> None:
@@ -118,8 +143,8 @@ class WallStore:
         self._conn.execute(
             "UPDATE walls SET unconfirmed = 1,"
             " unconfirmed_since = COALESCE(unconfirmed_since, ?)"
-            " WHERE unconfirmed = 0",
-            (since,),
+            " WHERE unconfirmed = 0 AND exchange = ?",
+            (since, self._exchange),
         )
         self._conn.commit()
 
@@ -143,4 +168,6 @@ class WallStore:
         self._conn.commit()
 
     def count(self) -> int:
-        return self._conn.execute("SELECT COUNT(*) FROM walls").fetchone()[0]
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM walls WHERE exchange = ?", (self._exchange,)
+        ).fetchone()[0]

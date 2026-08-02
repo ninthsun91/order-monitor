@@ -26,15 +26,18 @@ from order_monitor.ingestion.events import Side
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS alerts_outbox (
     id INTEGER PRIMARY KEY,
+    exchange TEXT NOT NULL,
     side TEXT NOT NULL,
     price TEXT NOT NULL,
     terminal_state TEXT NOT NULL,
     text TEXT NOT NULL,
     sent INTEGER NOT NULL DEFAULT 0,
     recorded_at REAL NOT NULL,
-    UNIQUE (side, price, terminal_state, recorded_at)
+    UNIQUE (exchange, side, price, terminal_state, recorded_at)
 )
 """
+
+_DATA_COLUMNS = "id, side, price, terminal_state, text, sent, recorded_at"
 
 
 def _canonical(value: Decimal) -> str:
@@ -42,10 +45,25 @@ def _canonical(value: Decimal) -> str:
 
 
 class AlertsOutboxStore:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, exchange: str = "binance") -> None:
+        self._exchange = exchange
         self._conn = sqlite3.connect(str(path))
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # v1.16 — 같은 DB 파일에 파이프라인별 연결이 공존 (단일 스레드라 동시 쓰기는
+        # 없지만, 짧은 잠금 겹침 방어)
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute(_SCHEMA)
+        # v1.16 마이그레이션 (PRD §12) — UNIQUE에 exchange 포함은 테이블 재생성 필요.
+        # id를 보존 복사해 미발송 행의 mark_sent 참조 연속성을 유지한다.
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(alerts_outbox)")}
+        if "exchange" not in columns:
+            self._conn.execute(_SCHEMA.replace("IF NOT EXISTS alerts_outbox", "alerts_outbox_new"))
+            self._conn.execute(
+                f"INSERT INTO alerts_outbox_new (exchange, {_DATA_COLUMNS})"
+                f" SELECT 'binance', {_DATA_COLUMNS} FROM alerts_outbox"
+            )
+            self._conn.execute("DROP TABLE alerts_outbox")
+            self._conn.execute("ALTER TABLE alerts_outbox_new RENAME TO alerts_outbox")
         self._conn.commit()
 
     def close(self) -> None:
@@ -56,9 +74,9 @@ class AlertsOutboxStore:
     ) -> int | None:
         cur = self._conn.execute(
             "INSERT OR IGNORE INTO alerts_outbox"
-            " (side, price, terminal_state, text, sent, recorded_at)"
-            " VALUES (?, ?, ?, ?, 0, ?)",
-            (side.value, _canonical(price), terminal_state, text, recorded_at),
+            " (exchange, side, price, terminal_state, text, sent, recorded_at)"
+            " VALUES (?, ?, ?, ?, ?, 0, ?)",
+            (self._exchange, side.value, _canonical(price), terminal_state, text, recorded_at),
         )
         self._conn.commit()
         return cur.lastrowid if cur.rowcount > 0 else None
@@ -69,9 +87,12 @@ class AlertsOutboxStore:
 
     def load_unsent(self) -> list[tuple[int, str]]:
         rows = self._conn.execute(
-            "SELECT id, text FROM alerts_outbox WHERE sent = 0 ORDER BY id"
+            "SELECT id, text FROM alerts_outbox WHERE sent = 0 AND exchange = ? ORDER BY id",
+            (self._exchange,),
         ).fetchall()
         return [(row[0], row[1]) for row in rows]
 
     def count(self) -> int:
-        return self._conn.execute("SELECT COUNT(*) FROM alerts_outbox").fetchone()[0]
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM alerts_outbox WHERE exchange = ?", (self._exchange,)
+        ).fetchone()[0]

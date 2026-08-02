@@ -2,9 +2,10 @@
 
 전이 이력(진행률·종국 이벤트)은 `events` 테이블이 전 필드로 담당하므로
 여기는 인스턴스 목록과 현재 상태만 둔다 (사용자 확정 2026-07-23 — 중복
-배제). 키는 `(run_started_at, intent_id)` — intent_id는 프로세스-런 내
-카운터라(재시작 시 0부터) 런 시각과 조합해야 유일하다 (alerts_outbox가
-intent_id를 유일키에 쓰지 않은 것과 같은 이유, PRD §9.4).
+배제). 키는 `(exchange, run_started_at, intent_id)` (v1.16) — intent_id는
+프로세스-런 내 카운터라(재시작 시 0부터) 런 시각과 조합해야 유일하고
+(alerts_outbox가 intent_id를 유일키에 쓰지 않은 것과 같은 이유, PRD §9.4),
+파이프라인별 D5 인스턴스가 각자 0부터 세므로 exchange까지 필요하다 (PRD §12).
 
 상태: `active` → (`confirmed` 래치, PRD §8 D5 v1.9 — 종국 아님, 행은 계속
 열림) → D5TerminalState 값. 재시작 마킹(PRD §12 — "진행 중 intent DB
@@ -28,6 +29,7 @@ STATE_CONFIRMED = "confirmed"  # 케이스 1 래치 (v1.9) — 종국 아님, �
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS intents (
+    exchange TEXT NOT NULL,
     run_started_at REAL NOT NULL,
     intent_id INTEGER NOT NULL,
     side TEXT NOT NULL,
@@ -38,9 +40,14 @@ CREATE TABLE IF NOT EXISTS intents (
     confirmed_at REAL,
     level_realized_rate TEXT,
     updated_at REAL NOT NULL,
-    PRIMARY KEY (run_started_at, intent_id)
+    PRIMARY KEY (exchange, run_started_at, intent_id)
 )
 """
+
+_DATA_COLUMNS = (
+    "run_started_at, intent_id, side, price, registered_qty, registered_at,"
+    " state, confirmed_at, level_realized_rate, updated_at"
+)
 
 
 def _canonical(value: Decimal) -> str:
@@ -48,10 +55,25 @@ def _canonical(value: Decimal) -> str:
 
 
 class IntentStore:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, exchange: str = "binance") -> None:
+        self._exchange = exchange
         self._conn = sqlite3.connect(str(path))
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # v1.16 — 같은 DB 파일에 파이프라인별 연결이 공존 (단일 스레드라 동시 쓰기는
+        # 없지만, 짧은 잠금 겹침 방어)
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute(_SCHEMA)
+        # v1.16 마이그레이션 (PRD §12) — PK에 exchange 추가. 파이프라인별 D5가
+        # intent_id를 각자 0부터 세므로 exchange 없이는 같은 런의 행이 충돌한다.
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(intents)")}
+        if "exchange" not in columns:
+            self._conn.execute(_SCHEMA.replace("IF NOT EXISTS intents", "intents_new"))
+            self._conn.execute(
+                f"INSERT INTO intents_new (exchange, {_DATA_COLUMNS})"
+                f" SELECT 'binance', {_DATA_COLUMNS} FROM intents"
+            )
+            self._conn.execute("DROP TABLE intents")
+            self._conn.execute("ALTER TABLE intents_new RENAME TO intents")
         self._conn.commit()
 
     def close(self) -> None:
@@ -67,10 +89,11 @@ class IntentStore:
         now: float,
     ) -> None:
         self._conn.execute(
-            "INSERT INTO intents (run_started_at, intent_id, side, price,"
+            "INSERT INTO intents (exchange, run_started_at, intent_id, side, price,"
             " registered_qty, registered_at, state, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
+                self._exchange,
                 run_started_at,
                 intent_id,
                 side.value,
@@ -88,8 +111,8 @@ class IntentStore:
     ) -> None:
         self._conn.execute(
             "UPDATE intents SET state = ?, confirmed_at = ?, level_realized_rate = ?,"
-            " updated_at = ? WHERE run_started_at = ? AND intent_id = ?",
-            (STATE_CONFIRMED, now, _canonical(rate), now, run_started_at, intent_id),
+            " updated_at = ? WHERE exchange = ? AND run_started_at = ? AND intent_id = ?",
+            (STATE_CONFIRMED, now, _canonical(rate), now, self._exchange, run_started_at, intent_id),
         )
         self._conn.commit()
 
@@ -98,8 +121,8 @@ class IntentStore:
     ) -> None:
         self._conn.execute(
             "UPDATE intents SET state = ?, level_realized_rate = ?, updated_at = ?"
-            " WHERE run_started_at = ? AND intent_id = ?",
-            (state, _canonical(rate), now, run_started_at, intent_id),
+            " WHERE exchange = ? AND run_started_at = ? AND intent_id = ?",
+            (state, _canonical(rate), now, self._exchange, run_started_at, intent_id),
         )
         self._conn.commit()
 
@@ -110,8 +133,9 @@ class IntentStore:
         여기 걸리는 행은 크래시/강제 종료로 종국 기록을 못 받은 것들이다.
         """
         cur = self._conn.execute(
-            "UPDATE intents SET state = ?, updated_at = ? WHERE state IN (?, ?)",
-            (D5TerminalState.INTERRUPTED.value, now, STATE_ACTIVE, STATE_CONFIRMED),
+            "UPDATE intents SET state = ?, updated_at = ?"
+            " WHERE state IN (?, ?) AND exchange = ?",
+            (D5TerminalState.INTERRUPTED.value, now, STATE_ACTIVE, STATE_CONFIRMED, self._exchange),
         )
         self._conn.commit()
         return cur.rowcount
@@ -133,6 +157,7 @@ class IntentStore:
             for row in self._conn.execute(
                 "SELECT run_started_at, intent_id, side, price, registered_qty,"
                 " registered_at, state, confirmed_at, level_realized_rate, updated_at"
-                " FROM intents ORDER BY run_started_at, intent_id"
+                " FROM intents WHERE exchange = ? ORDER BY run_started_at, intent_id",
+                (self._exchange,),
             ).fetchall()
         ]
