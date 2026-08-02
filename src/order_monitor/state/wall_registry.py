@@ -4,6 +4,10 @@ full book을 유지하지 않는다. diff 이벤트는 절대 잔량을 운반�
 자가치유된다. 갱신 규칙 (PRD §7, §8 D1 v1.2):
 
 - 신규 가격은 `record_min_qty_btc` 이상일 때만 등록 (등록 게이트)
+- (v1.16) 신규 가격은 추가로 등록 가격대역 게이트 통과 필요 — `band_pct` > 0이면
+  mid×(1±band_pct) 밖 가격의 등록을 거부 (Coinbase full-book의 원거리 쓰레기 주문
+  차단, PRD §5.5). **등록에만** 적용 — 추적 중 가격이 대역을 벗어나도 갱신·tombstone은
+  계속 처리한다 (관측 하한과 동일 원리). mid 미확보(기동 직후) 시 등록 허용 — 관측 우선
 - 추적 중인 가격은 **잔량 값과 무관하게 모든 이벤트 처리** (유령 벽 방지)
 - 잔량 0 = tombstone 소멸, 0 < 잔량 < 하한 = 하한 미만 소멸 — 소멸 레코드를 반환하고
   활성 레지스트리에서 제거 (D1 REMOVED 판정은 M2의 소비자 몫)
@@ -67,10 +71,14 @@ class WallRegistry:
         record_min_qty: Decimal,
         size_threshold: Decimal,
         clock: Callable[[], float] = time.time,
+        band_pct: Decimal = Decimal(0),
+        mid_price_supplier: Callable[[], Decimal | None] | None = None,
     ) -> None:
         self._record_min_qty = record_min_qty
         self._size_threshold = size_threshold
         self._clock = clock
+        self._band_pct = band_pct
+        self._mid_price_supplier = mid_price_supplier
         self._walls: dict[tuple[Side, Decimal], Wall] = {}
 
     def apply_diff(self, event: DiffDepthEvent) -> DiffResult:
@@ -93,6 +101,8 @@ class WallRegistry:
         if wall is None:
             # 등록 게이트는 신규 가격에만 적용 (PRD §8 D1 소멸 규칙)
             if qty < self._record_min_qty:
+                return None
+            if not self._within_band(price):
                 return None
             wall = Wall(
                 price=price,
@@ -128,6 +138,15 @@ class WallRegistry:
             # 임계 밑으로 내려가면 지속 타이머 리셋 (재상승 시 재계측 — PRD §8 D1 조건 3)
             wall.first_seen_above_threshold = None
         return None
+
+    def _within_band(self, price: Decimal) -> bool:
+        """등록 가격대역 게이트 (v1.16, PRD §5.5) — 신규 등록 전용."""
+        if self._band_pct <= 0 or self._mid_price_supplier is None:
+            return True
+        mid = self._mid_price_supplier()
+        if mid is None:
+            return True  # 기동 직후 mid 미확보 — 관측 우선
+        return mid * (1 - self._band_pct) <= price <= mid * (1 + self._band_pct)
 
     def mark_all_unconfirmed(self) -> None:
         """청취 공백(재시작 복원, diff 단절·staleness·U/u 갭) 시 호출 (PRD §12.1 규칙 1)."""

@@ -203,3 +203,72 @@ class TestRestore:
         wall = reg.get(Side.BUY, Decimal("61000"))
         assert wall.unconfirmed and wall.unconfirmed_since == 9000.0
         assert wall.first_seen_above_threshold == 150.0  # 보존
+
+
+# ---- v1.16 등록 가격대역 게이트 (PRD §5.5) ----
+
+
+def band_registry(mid, band="0.20"):
+    return WallRegistry(
+        record_min_qty=FLOOR,
+        size_threshold=THRESHOLD,
+        clock=FakeClock(),
+        band_pct=Decimal(band),
+        mid_price_supplier=lambda: mid,
+    )
+
+
+def test_band_rejects_far_garbage_registration():
+    # Coinbase full-book 실측 사례: $0.01에 65,000 BTC 매수 주문 — 등록 거부
+    r = band_registry(mid=Decimal("62900"))
+    result = r.apply_diff(diff(bids=[("0.01", "65000")]))
+    assert result.registrations == [] and len(r) == 0
+
+
+def test_band_accepts_in_band_registration():
+    r = band_registry(mid=Decimal("62900"))
+    result = r.apply_diff(diff(bids=[("60000", "150")]))
+    assert len(result.registrations) == 1 and len(r) == 1
+
+
+def test_band_boundary_is_inclusive():
+    r = band_registry(mid=Decimal("50000"))
+    result = r.apply_diff(diff(bids=[("40000", "150")], asks=[("60000", "150")]))
+    assert len(result.registrations) == 2
+
+
+def test_band_none_mid_allows_registration():
+    # 기동 직후 ticker 미수신 (mid=None) — 관측 우선으로 등록 허용
+    r = WallRegistry(
+        record_min_qty=FLOOR,
+        size_threshold=THRESHOLD,
+        clock=FakeClock(),
+        band_pct=Decimal("0.20"),
+        mid_price_supplier=lambda: None,
+    )
+    assert len(r.apply_diff(diff(bids=[("0.01", "65000")])).registrations) == 1
+
+
+def test_band_zero_disables_gate():
+    # band_pct=0 (바이낸스 기본) — 종전 동작
+    r = registry()
+    assert len(r.apply_diff(diff(bids=[("0.01", "65000")])).registrations) == 1
+
+
+def test_tracked_wall_updates_and_tombstone_ignore_band():
+    # 추적 중 가격은 대역 밖으로 벗어나도(mid 이동) 갱신·tombstone 전부 처리 — 유령 벽 방지
+    mid = {"v": Decimal("62900")}
+    r = WallRegistry(
+        record_min_qty=FLOOR,
+        size_threshold=THRESHOLD,
+        clock=FakeClock(),
+        band_pct=Decimal("0.20"),
+        mid_price_supplier=lambda: mid["v"],
+    )
+    r.apply_diff(diff(bids=[("60000", "150")]))
+    mid["v"] = Decimal("100000")  # 60000이 대역(80k~120k) 밖으로
+    r.apply_diff(diff(bids=[("60000", "200")]))
+    assert r.get(Side.BUY, Decimal("60000")).last_qty == Decimal("200")
+    removals = r.apply_diff(diff(bids=[("60000", "0")])).removals
+    assert len(removals) == 1 and removals[0].reason is RemovalReason.TOMBSTONE
+    assert len(r) == 0
