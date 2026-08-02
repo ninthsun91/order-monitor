@@ -34,10 +34,14 @@ def load_fixture(name: str) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def replay(records: list[dict], config: AppConfig, db_path) -> tuple[MonitorService, list]:
+def replay(
+    records: list[dict], config: AppConfig, db_path, exchange: str = "binance"
+) -> tuple[MonitorService, list]:
     """레코드 시퀀스를 재생하고 (service, 발신된 디텍터 이벤트 목록)을 반환한다.
 
-    호출자는 service._store.close()로 정리한다.
+    호출자는 service._store.close()로 정리한다. exchange는 파이프라인 선택 (M8,
+    PRD §5.5) — coinbase 픽스처의 `coinbase:` 스트림은 parse_stream_message가
+    위임 라우팅한다.
     """
     now = {"t": 0.0}
     service = MonitorService(
@@ -46,6 +50,7 @@ def replay(records: list[dict], config: AppConfig, db_path) -> tuple[MonitorServ
         telegram_token="replay-token",
         clock=lambda: WALL_CLOCK_BASE + now["t"],
         monotonic=lambda: now["t"],
+        exchange=exchange,
     )
     service.startup()
 
@@ -87,5 +92,7 @@ def replay(records: list[dict], config: AppConfig, db_path) -> tuple[MonitorServ
             stream, event = parse_stream_message(
                 {"stream": record["stream"], "data": record["data"]}, record["t"]
             )
+            if event is None:  # coinbase heartbeat 등 — 정규화 이벤트 없음 (v1.16)
+                continue
             service.on_event(stream, event)
     return service, emitted

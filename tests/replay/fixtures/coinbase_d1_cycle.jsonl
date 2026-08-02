@@ -1,0 +1,15 @@
+{"t":0.0,"control":"connect"}
+{"t":0.05,"stream":"coinbase:BTC-USD@level2","data":{"type":"snapshot","product_id":"BTC-USD","bids":[["62900.00","1.0"],["60000.00","600"],["0.01","65000"]],"asks":[["62901.00","1.0"]],"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":0.1,"stream":"coinbase:BTC-USD@ticker","data":{"type":"ticker","sequence":1,"product_id":"BTC-USD","price":"62900.00","best_bid":"62900.00","best_bid_size":"1.0","best_ask":"62901.00","best_ask_size":"1.0","side":"buy","time":"2026-08-02T05:00:00.000000Z"}}
+{"t":0.15,"stream":"coinbase:BTC-USD@heartbeat","data":{"type":"heartbeat","last_trade_id":99,"product_id":"BTC-USD","sequence":990,"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":0.2,"stream":"coinbase:BTC-USD@matches","data":{"type":"match","trade_id":100,"side":"sell","size":"0.5","price":"62901.00","product_id":"BTC-USD","sequence":1000,"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":3.6,"stream":"coinbase:BTC-USD@level2","data":{"type":"l2update","product_id":"BTC-USD","changes":[["buy","62899.00","2.0"]],"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":4.0,"stream":"coinbase:BTC-USD@ticker","data":{"type":"ticker","sequence":2,"product_id":"BTC-USD","price":"60000.00","best_bid":"60000.00","best_bid_size":"1.0","best_ask":"60000.50","best_ask_size":"1.0","side":"buy","time":"2026-08-02T05:00:00.000000Z"}}
+{"t":4.2,"stream":"coinbase:BTC-USD@matches","data":{"type":"match","trade_id":101,"side":"buy","size":"120","price":"60000.00","product_id":"BTC-USD","sequence":1010,"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":4.4,"stream":"coinbase:BTC-USD@level2","data":{"type":"l2update","product_id":"BTC-USD","changes":[["buy","60000.00","480"]],"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":4.6,"stream":"coinbase:BTC-USD@matches","data":{"type":"match","trade_id":102,"side":"buy","size":"120","price":"60000.00","product_id":"BTC-USD","sequence":1020,"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":4.8,"stream":"coinbase:BTC-USD@level2","data":{"type":"l2update","product_id":"BTC-USD","changes":[["buy","60000.00","380"]],"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":5.0,"stream":"coinbase:BTC-USD@matches","data":{"type":"match","trade_id":103,"side":"buy","size":"120","price":"60000.00","product_id":"BTC-USD","sequence":1030,"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":5.2,"stream":"coinbase:BTC-USD@level2","data":{"type":"l2update","product_id":"BTC-USD","changes":[["buy","60000.00","300"]],"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":5.4,"stream":"coinbase:BTC-USD@matches","data":{"type":"match","trade_id":104,"side":"buy","size":"80","price":"60000.00","product_id":"BTC-USD","sequence":1040,"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":5.6,"stream":"coinbase:BTC-USD@level2","data":{"type":"l2update","product_id":"BTC-USD","changes":[["buy","60000.00","0.00000000"]],"time":"2026-08-02T05:00:00.000000Z"}}

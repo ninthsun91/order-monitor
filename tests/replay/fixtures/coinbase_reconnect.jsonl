@@ -1,0 +1,13 @@
+{"t":0.0,"control":"connect"}
+{"t":0.05,"stream":"coinbase:BTC-USD@level2","data":{"type":"snapshot","product_id":"BTC-USD","bids":[["62900.00","1.0"],["60000.00","600"]],"asks":[["62901.00","1.0"]],"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":0.1,"stream":"coinbase:BTC-USD@ticker","data":{"type":"ticker","sequence":1,"product_id":"BTC-USD","price":"62900.00","best_bid":"62900.00","best_bid_size":"1.0","best_ask":"62901.00","best_ask_size":"1.0","side":"buy","time":"2026-08-02T05:00:00.000000Z"}}
+{"t":0.2,"stream":"coinbase:BTC-USD@matches","data":{"type":"match","trade_id":100,"side":"sell","size":"0.5","price":"62901.00","product_id":"BTC-USD","sequence":1000,"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":3.6,"stream":"coinbase:BTC-USD@level2","data":{"type":"l2update","product_id":"BTC-USD","changes":[["buy","62899.00","2.0"]],"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":4.0,"stream":"coinbase:BTC-USD@ticker","data":{"type":"ticker","sequence":2,"product_id":"BTC-USD","price":"60000.00","best_bid":"60000.00","best_bid_size":"1.0","best_ask":"60000.50","best_ask_size":"1.0","side":"buy","time":"2026-08-02T05:00:00.000000Z"}}
+{"t":4.2,"stream":"coinbase:BTC-USD@matches","data":{"type":"match","trade_id":101,"side":"buy","size":"120","price":"60000.00","product_id":"BTC-USD","sequence":1010,"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":5.0,"control":"disconnect"}
+{"t":6.0,"control":"connect"}
+{"t":6.05,"stream":"coinbase:BTC-USD@level2","data":{"type":"snapshot","product_id":"BTC-USD","bids":[["62900.00","1.0"],["60000.00","600"]],"asks":[["62901.00","1.0"]],"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":6.1,"stream":"coinbase:BTC-USD@ticker","data":{"type":"ticker","sequence":3,"product_id":"BTC-USD","price":"62900.00","best_bid":"62900.00","best_bid_size":"1.0","best_ask":"62901.00","best_ask_size":"1.0","side":"buy","time":"2026-08-02T05:00:00.000000Z"}}
+{"t":6.2,"stream":"coinbase:BTC-USD@matches","data":{"type":"match","trade_id":200,"side":"sell","size":"0.5","price":"62901.00","product_id":"BTC-USD","sequence":2000,"time":"2026-08-02T05:00:00.000000Z"}}
+{"t":6.4,"stream":"coinbase:BTC-USD@level2","data":{"type":"l2update","product_id":"BTC-USD","changes":[["buy","62899.00","2.0"]],"time":"2026-08-02T05:00:00.000000Z"}}
