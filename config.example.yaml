@@ -1,7 +1,4 @@
-symbol: BTC/USDT
-
 thresholds:
-  size_threshold_btc: 1000       # D1/D5 인텐트 기준 (PRD v1.1 확정 — 벽 레지스트리 레벨에 적용)
   persist_seconds: 3             # D1 스푸핑 필터
   exit_ratio: 0.5
   fill_attribution: 0.7
@@ -36,8 +33,7 @@ alerts:
   bucket_size_usdt: 50
   cooldown_seconds: 300
 
-wall_tracker:                    # PRD v1.1 — diff 탭 벽 레지스트리
-  record_min_qty_btc: 100        # 레지스트리 "기록" 하한 (알림 아님 — 관측·튜닝 데이터용, 알림은 size_threshold_btc)
+wall_tracker:                    # PRD v1.1 — diff 탭 벽 레지스트리 (거래소 스코프 키는 exchanges.*로 이동, v1.17)
   ttl_days: 7                    # unconfirmed 마킹 후 이 기간 재확인 이벤트 없으면 삭제 (PRD §12.1 v1.2 — 확인된 벽은 무기한 유지)
 
 watch:                           # PRD v1.13 — W 주시 레벨 관측기 (§8 W). 주시 "목록"은 config가 아니라 런타임 명령(§9.5) + SQLite(§12.2)
@@ -47,8 +43,13 @@ watch:                           # PRD v1.13 — W 주시 레벨 관측기 (§8 
   invalidate_buffer_pct: 0.0025  # 무효화 마감가 버퍼 (0.25%)
   report_interval_seconds: 600   # 주기 리포트 간격 (5~15분 권장 대역)
 
-exchanges:                       # PRD v1.16 — 멀티 거래소 (§5.5). 섹션/거래소 미기재 = 해당 거래소 미모니터링 (바이낸스 단독 = 기존 동작)
-  coinbase:                      # M8 1차 대상 — D1+D3+D5만 (D2·D4·W는 바이낸스 전용)
+exchanges:                       # PRD §5.5·§10 v1.17 — 필수 섹션, binance 필수 포함. 거래소 스코프 키의 단일 거처
+  binance:                       # 프라이머리 — 전 디텍터 (D1~D5 + W)
+    symbol: BTC/USDT
+    size_threshold_btc: 1000     # D1/D5 인텐트 기준 (PRD v1.1 확정 — 벽 레지스트리 레벨에 적용)
+    record_min_qty_btc: 100      # 레지스트리 "기록" 하한 (알림 아님 — 관측·튜닝 데이터용)
+    band_pct: 0                  # 게이트 없음 — 거래소단 PERCENT_PRICE 필터가 대역 담당 (v1.17 확정)
+  coinbase:                      # M8 1차 대상 — D1+D3+D5만 (D2·D4·W는 바이낸스 전용). 미기재 = 미모니터링
     symbol: BTC-USD
     size_threshold_btc: 500      # 사용자 지정 초기값 (2026-08-02) — 바이낸스 1000의 절반, 병행 관측 후 조정
     record_min_qty_btc: 50       # 관측 플로어 — 바이낸스 100의 절반

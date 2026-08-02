@@ -135,22 +135,19 @@ class MonitorService:
         self._exchange = exchange
         self._primary = telegram_sender is None
         is_binance = exchange == "binance"
-        if is_binance:
-            symbol = config.symbol
-            size_threshold = Decimal(str(config.thresholds.size_threshold_btc))
-            record_min_qty = Decimal(str(config.wall_tracker.record_min_qty_btc))
-            band_pct = Decimal(0)  # 바이낸스는 거래소단 PERCENT_PRICE 필터가 대역을 담당
-            venue_label = None  # dispatcher 기본값 = 기존 문자열
-        else:
-            if exchange not in config.exchanges:
-                raise ValueError(f"config exchanges 섹션에 '{exchange}'가 없습니다")
-            exch_cfg = config.exchanges[exchange]
-            symbol = exch_cfg.symbol
-            size_threshold = Decimal(str(exch_cfg.size_threshold_btc))
-            record_min_qty = Decimal(str(exch_cfg.record_min_qty_btc))
-            band_pct = Decimal(str(exch_cfg.band_pct))
-            venue_label = f"{symbol} ({exchange.capitalize()})"
+        # 거래소 스코프 키는 exchanges.*가 단일 거처 (v1.17 — 바이낸스 포함)
+        if exchange not in config.exchanges:
+            raise ValueError(f"config exchanges 섹션에 '{exchange}'가 없습니다")
+        exch_cfg = config.exchanges[exchange]
+        symbol = exch_cfg.symbol
+        size_threshold = Decimal(str(exch_cfg.size_threshold_btc))
+        record_min_qty = Decimal(str(exch_cfg.record_min_qty_btc))
+        band_pct = Decimal(str(exch_cfg.band_pct))
+        venue_label = (
+            f"{symbol} (Binance Spot)" if is_binance else f"{symbol} ({exchange.capitalize()})"
+        )
         self._symbol = symbol
+        self._size_threshold = size_threshold
 
         self.order_book = OrderBook()
         self.trade_window = TradeWindow(config.thresholds.window_seconds)
@@ -160,7 +157,8 @@ class MonitorService:
             size_threshold=size_threshold,
             clock=clock,
             band_pct=band_pct,
-            mid_price_supplier=None if is_binance else self._mid_price,
+            # band_pct=0(바이낸스)이면 게이트가 supplier 호출 전 단락 — 공통 주입 무해
+            mid_price_supplier=self._mid_price,
         )
         # 벽 레벨은 top-20 창 이탈에도 누적 보존 (§7 v1.4 예외 — level_tracker docstring).
         # 비-바이낸스는 top-1 합성 스냅샷이라 체결 선행 시 엔트리 생성 (v1.16, §5.5)
@@ -414,7 +412,7 @@ class MonitorService:
             return
         minutes = int(self._config.thresholds.vol_baseline_hours * 60)
         try:
-            bars = await fetch_minute_volumes(self._config.symbol, minutes)
+            bars = await fetch_minute_volumes(self._symbol, minutes)
         except BootstrapError as exc:
             logger.warning(
                 "baseline bootstrap failed — D2 held until window fills",
@@ -583,8 +581,8 @@ class MonitorService:
             self.wall_registry.walls(),
             best_bid=best_bid,
             best_ask=best_ask,
-            symbol=self._config.symbol,
-            size_threshold=Decimal(str(self._config.thresholds.size_threshold_btc)),
+            symbol=self._symbol,
+            size_threshold=self._size_threshold,
             now_epoch_seconds=self._clock(),
         )
 

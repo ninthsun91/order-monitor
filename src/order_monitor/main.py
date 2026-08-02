@@ -30,7 +30,7 @@ def main() -> None:
     config = load_config(args.config)
     logger.info(
         "config loaded",
-        extra={"symbol": config.symbol, "exchanges": sorted(config.exchanges)},
+        extra={"exchanges": sorted(config.exchanges)},
     )
 
     # 바이낸스 = 프라이머리 (공유 sender·heartbeat·수신 명령 소유), 신규 거래소는
@@ -43,6 +43,8 @@ def main() -> None:
     )
     services = [service]
     for exchange in sorted(config.exchanges):
+        if exchange == "binance":  # 프라이머리로 이미 생성 (v1.17 — binance도 exchanges에 포함)
+            continue
         services.append(
             MonitorService(
                 config,

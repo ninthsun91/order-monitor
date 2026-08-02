@@ -11,15 +11,16 @@ EXAMPLE_CONFIG = Path(__file__).resolve().parent.parent / "config.example.yaml"
 def test_load_example_config():
     config = load_config(EXAMPLE_CONFIG)
 
-    assert config.symbol == "BTC/USDT"
-    assert config.thresholds.size_threshold_btc == 1000.0
+    assert config.exchanges["binance"].symbol == "BTC/USDT"  # v1.17 — exchanges로 이동
+    assert config.exchanges["binance"].size_threshold_btc == 1000.0
     assert config.thresholds.absorb_multiple == 2.0  # D4 배수 판정 (PRD v1.11)
     assert config.thresholds.absorb_progress_step == 0.5
     assert config.thresholds.absorb_min_events == 5
     assert config.alerts.send_d4 is True  # D4 흡수 방어 알림 기본 on (PRD v1.11)
     assert config.alerts.send_d1 is True  # 기본 on (PRD v1.10 — 52230f2에서 임시 on으로 시작해 정식 승격)
     assert config.alerts.send_d2 is True
-    assert config.wall_tracker.record_min_qty_btc == 100.0
+    assert config.exchanges["binance"].record_min_qty_btc == 100.0  # v1.17 이동
+    assert config.exchanges["binance"].band_pct == 0.0  # 게이트 없음 (v1.17 확정)
     assert config.wall_tracker.ttl_days == 7.0
     assert config.telegram.chat_id == "..."
     assert config.watchdog.stale_seconds == 30.0
@@ -41,7 +42,7 @@ def test_missing_top_level_key_raises(tmp_path):
 def test_missing_section_key_raises(tmp_path):
     bad_config = tmp_path / "config.yaml"
     bad_config.write_text(
-        EXAMPLE_CONFIG.read_text().replace("size_threshold_btc: 1000", "")
+        EXAMPLE_CONFIG.read_text().replace("persist_seconds: 3             # D1 스푸핑 필터", "")
     )
 
     with pytest.raises(ConfigError, match="thresholds' is missing required keys"):
@@ -54,7 +55,8 @@ def test_missing_wall_tracker_key_raises(tmp_path):
         EXAMPLE_CONFIG.read_text().replace("ttl_days: 7", "")
     )
 
-    with pytest.raises(ConfigError, match="wall_tracker' is missing required keys"):
+    # v1.17 — ttl_days가 유일 키라 제거 시 섹션 자체가 빈 매핑이 된다
+    with pytest.raises(ConfigError, match="wall_tracker' must be a mapping"):
         load_config(bad_config)
 
 
@@ -64,7 +66,7 @@ def test_wall_tracker_wrong_type_raises(tmp_path):
         EXAMPLE_CONFIG.read_text().replace("record_min_qty_btc: 100", "record_min_qty_btc: many")
     )
 
-    with pytest.raises(ConfigError, match="wall_tracker.record_min_qty_btc' must be a number"):
+    with pytest.raises(ConfigError, match="exchanges.binance.record_min_qty_btc' must be a number"):
         load_config(bad_config)
 
 
@@ -151,7 +153,7 @@ def test_record_min_above_size_threshold_raises(tmp_path):
         EXAMPLE_CONFIG.read_text().replace("record_min_qty_btc: 100", "record_min_qty_btc: 2000")
     )
 
-    with pytest.raises(ConfigError, match="record_min_qty_btc' must be less than"):
+    with pytest.raises(ConfigError, match="exchanges.binance.record_min_qty_btc' must be less than"):
         load_config(bad_config)
 
 
@@ -313,22 +315,33 @@ def test_telegram_command_chat_ids_not_list_raises(tmp_path):
 # ---- v1.16 exchanges 섹션 (PRD §10) ----
 
 
-def test_exchanges_section_absent_yields_empty_dict(tmp_path):
-    # 섹션 부재 = 바이낸스 단독 — 기존 배포 config 무변경 기동 (PRD §10 v1.16)
+def test_exchanges_section_absent_raises(tmp_path):
+    # v1.17 — exchanges는 필수 섹션 (v1.16의 "부재 = 바이낸스 단독" 의미론 폐기)
     text = EXAMPLE_CONFIG.read_text()
     lines = text.splitlines(keepends=True)
     start = next(i for i, line in enumerate(lines) if line.startswith("exchanges:"))
     end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("telegram:"))
-    stripped = "".join(lines[:start] + lines[end:])
     path = tmp_path / "config.yaml"
-    path.write_text(stripped)
-    config = load_config(path)
-    assert config.exchanges == {}
+    path.write_text("".join(lines[:start] + lines[end:]))
+    with pytest.raises(ConfigError, match="missing required top-level keys: exchanges"):
+        load_config(path)
+
+
+def test_exchanges_without_binance_raises(tmp_path):
+    # binance 필수 포함 (사용자 확정 2026-08-02 — 프라이머리 파이프라인)
+    text = EXAMPLE_CONFIG.read_text()
+    lines = text.splitlines(keepends=True)
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith("binance:"))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].strip().startswith("coinbase:"))
+    path = tmp_path / "config.yaml"
+    path.write_text("".join(lines[:start] + lines[end:]))
+    with pytest.raises(ConfigError, match="must contain 'binance'"):
+        load_config(path)
 
 
 def test_exchanges_coinbase_parses(tmp_path):
     config = load_config(EXAMPLE_CONFIG)
-    assert set(config.exchanges) == {"coinbase"}
+    assert set(config.exchanges) == {"binance", "coinbase"}
     coinbase = config.exchanges["coinbase"]
     assert coinbase.symbol == "BTC-USD"
     assert coinbase.size_threshold_btc == 500.0

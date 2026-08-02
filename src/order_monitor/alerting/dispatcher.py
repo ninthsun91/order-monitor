@@ -147,10 +147,14 @@ class AlertDispatcher:
         wall_lookup: Callable[[], list[Wall]] | None = None,
         venue_label: str | None = None,
     ) -> None:
-        self._symbol = config.symbol
-        # v1.16 (PRD §9.3) — 심볼 라인의 venue 표기 파라미터화. 기본값 = 기존 문자열
-        # 바이트 동일 (바이낸스 경로 무변경). Coinbase 등은 "BTC-USD (Coinbase)" 주입
-        self._venue_label = venue_label if venue_label is not None else f"{config.symbol} (Binance Spot)"
+        # v1.16 (PRD §9.3) — 심볼 라인의 venue 표기 파라미터화. 기본값은 프라이머리
+        # (binance — v1.17부터 exchanges 필수 포함이 스키마 보장) 기준으로 기존 문자열
+        # 바이트 동일. 타 거래소 파이프라인은 service가 명시 주입
+        self._venue_label = (
+            venue_label
+            if venue_label is not None
+            else f"{config.exchanges['binance'].symbol} (Binance Spot)"
+        )
         self._alerts = config.alerts
         self._thresholds = config.thresholds
         self._bucket_size = Decimal(str(config.alerts.bucket_size_usdt))

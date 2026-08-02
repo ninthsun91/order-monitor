@@ -39,7 +39,7 @@ def test_main_loads_config_and_starts_service(tmp_path, monkeypatch):
     lines = log_path.read_text().strip().splitlines()
     record = json.loads(lines[-1])
     assert record["message"] == "config loaded"
-    assert record["symbol"] == "BTC/USDT"
+    assert record["exchanges"] == ["binance", "coinbase"]  # v1.17 — symbol은 exchanges로 이동
 
 
 def test_main_refuses_to_start_without_telegram_token(monkeypatch):

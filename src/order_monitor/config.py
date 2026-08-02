@@ -13,7 +13,6 @@ class ConfigError(Exception):
 
 @dataclasses.dataclass(frozen=True)
 class ThresholdsConfig:
-    size_threshold_btc: float
     persist_seconds: float
     exit_ratio: float
     fill_attribution: float
@@ -65,8 +64,7 @@ class WatchdogConfig:
 
 @dataclasses.dataclass(frozen=True)
 class WallTrackerConfig:
-    record_min_qty_btc: float
-    ttl_days: float
+    ttl_days: float  # v1.17 — record_min_qty_btc는 exchanges.*로 이동 (거래소 스코프 키)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,31 +78,30 @@ class WatchConfig:
 
 @dataclasses.dataclass(frozen=True)
 class ExchangeConfig:
-    """v1.16 — 신규 거래소별 설정 (PRD §5.5·§10). 바이낸스는 기존 top-level 키 유지."""
+    """v1.16 신설, v1.17 — 거래소 스코프 키의 단일 거처 (바이낸스 포함, PRD §5.5·§10)."""
 
     symbol: str
     size_threshold_btc: float
     record_min_qty_btc: float
-    band_pct: float  # 레지스트리 등록 가격대역 (full-book 원거리 쓰레기 주문 차단)
+    band_pct: float  # 레지스트리 등록 가격대역 (full-book 원거리 쓰레기 주문 차단). 0 = 게이트 없음
 
 
 @dataclasses.dataclass(frozen=True)
 class AppConfig:
-    symbol: str
     thresholds: ThresholdsConfig
     alerts: AlertsConfig
     wall_tracker: WallTrackerConfig
     watch: WatchConfig
     telegram: TelegramConfig
     watchdog: WatchdogConfig
-    # v1.16 — 선택 섹션: 부재 시 빈 dict = 바이낸스 단독 (기존 config 무변경 기동 보장)
-    exchanges: dict[str, ExchangeConfig] = dataclasses.field(default_factory=dict)
+    # v1.17 — 필수 섹션, binance 필수 포함 (사용자 확정 2026-08-02. v1.16의
+    # "부재 = 바이낸스 단독" 하위호환 의미론은 첫 배포 전 폐기)
+    exchanges: dict[str, ExchangeConfig]
 
 
-_TOP_LEVEL_STR_FIELDS = ("symbol",)
-_TOP_LEVEL_SECTION_FIELDS = ("thresholds", "alerts", "wall_tracker", "watch", "telegram", "watchdog")
-# v1.16 — M8은 coinbase만. kraken/bitfinex는 어댑터 지원 시 추가 (미지 거래소명은 거부)
-_SUPPORTED_EXCHANGES = ("coinbase",)
+_TOP_LEVEL_SECTION_FIELDS = ("thresholds", "alerts", "wall_tracker", "watch", "telegram", "watchdog", "exchanges")
+# kraken/bitfinex는 어댑터 지원 시 추가 (미지 거래소명은 거부)
+_SUPPORTED_EXCHANGES = ("binance", "coinbase")
 
 
 def _check_value_type(section: str, name: str, value: object, expected_type: type) -> object:
@@ -188,11 +185,6 @@ def _validate_invariants(config: AppConfig) -> None:
         if not 0 < value <= 1:
             raise ConfigError(f"'thresholds.{name}' must be in (0, 1], got {value}")
 
-    if config.wall_tracker.record_min_qty_btc >= config.thresholds.size_threshold_btc:
-        raise ConfigError(
-            "'wall_tracker.record_min_qty_btc' must be less than 'thresholds.size_threshold_btc'"
-        )
-
     if config.thresholds.delta_balanced_ratio >= config.thresholds.delta_directional_ratio:
         raise ConfigError(
             "'thresholds.delta_balanced_ratio' must be less than 'thresholds.delta_directional_ratio'"
@@ -234,7 +226,7 @@ def _validate_invariants(config: AppConfig) -> None:
     if not config.telegram.command_chat_ids:
         raise ConfigError("'telegram.command_chat_ids' must contain at least one chat id")
 
-    # v1.16 — 거래소별 섹션 (PRD §10)
+    # v1.16 — 거래소별 섹션 (PRD §10). 2단 임계치 순서는 거래소 스코프 검증이 담당 (v1.17)
     for name, exch in config.exchanges.items():
         if not exch.symbol:
             raise ConfigError(f"'exchanges.{name}.symbol' must be non-empty")
@@ -245,8 +237,9 @@ def _validate_invariants(config: AppConfig) -> None:
                 f"'exchanges.{name}.record_min_qty_btc' must be less than"
                 f" 'exchanges.{name}.size_threshold_btc'"
             )
-        if not 0 < exch.band_pct <= 1:
-            raise ConfigError(f"'exchanges.{name}.band_pct' must be in (0, 1], got {exch.band_pct}")
+        # v1.17 — 0 허용 (게이트 없음): 바이낸스는 거래소단 PERCENT_PRICE 필터가 대역 담당
+        if not 0 <= exch.band_pct <= 1:
+            raise ConfigError(f"'exchanges.{name}.band_pct' must be in [0, 1], got {exch.band_pct}")
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -260,21 +253,7 @@ def load_config(path: str | Path) -> AppConfig:
     if not isinstance(raw, dict):
         raise ConfigError("config file must contain a top-level mapping")
 
-    # v1.16 — exchanges는 선택 섹션 (부재 = 바이낸스 단독, 기존 배포 config 무변경 기동)
-    exchanges_raw = raw.pop("exchanges", None)
-    exchanges: dict[str, ExchangeConfig] = {}
-    if exchanges_raw is not None:
-        if not isinstance(exchanges_raw, dict):
-            raise ConfigError("'exchanges' must be a mapping")
-        unknown = [key for key in exchanges_raw if key not in _SUPPORTED_EXCHANGES]
-        if unknown:
-            raise ConfigError(f"'exchanges' has unsupported exchanges: {', '.join(sorted(unknown))}")
-        exchanges = {
-            name: _build_section(ExchangeConfig, exchanges_raw[name], f"exchanges.{name}")
-            for name in exchanges_raw
-        }
-
-    known = _TOP_LEVEL_STR_FIELDS + _TOP_LEVEL_SECTION_FIELDS
+    known = _TOP_LEVEL_SECTION_FIELDS
     missing = [key for key in known if key not in raw]
     if missing:
         raise ConfigError(f"config is missing required top-level keys: {', '.join(missing)}")
@@ -283,12 +262,21 @@ def load_config(path: str | Path) -> AppConfig:
     if extra:
         raise ConfigError(f"config has unknown top-level keys: {', '.join(sorted(extra))}")
 
-    top_level_values = {
-        name: _check_value_type("<root>", name, raw[name], str) for name in _TOP_LEVEL_STR_FIELDS
+    # v1.17 — exchanges는 필수 섹션 + binance 필수 포함 (거래소 스코프 키의 단일 거처)
+    exchanges_raw = raw["exchanges"]
+    if not isinstance(exchanges_raw, dict):
+        raise ConfigError("'exchanges' must be a mapping")
+    unknown = [key for key in exchanges_raw if key not in _SUPPORTED_EXCHANGES]
+    if unknown:
+        raise ConfigError(f"'exchanges' has unsupported exchanges: {', '.join(sorted(unknown))}")
+    if "binance" not in exchanges_raw:
+        raise ConfigError("'exchanges' must contain 'binance' (primary pipeline)")
+    exchanges = {
+        name: _build_section(ExchangeConfig, exchanges_raw[name], f"exchanges.{name}")
+        for name in exchanges_raw
     }
 
     config = AppConfig(
-        **top_level_values,
         thresholds=_build_section(ThresholdsConfig, raw["thresholds"], "thresholds"),
         alerts=_build_section(AlertsConfig, raw["alerts"], "alerts"),
         wall_tracker=_build_section(WallTrackerConfig, raw["wall_tracker"], "wall_tracker"),
