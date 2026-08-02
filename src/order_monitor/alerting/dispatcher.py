@@ -145,8 +145,12 @@ class AlertDispatcher:
         outbox: AlertsOutboxStore | None = None,
         d1_streak_gate: Callable[[D1Appeared], bool] | None = None,
         wall_lookup: Callable[[], list[Wall]] | None = None,
+        venue_label: str | None = None,
     ) -> None:
         self._symbol = config.symbol
+        # v1.16 (PRD §9.3) — 심볼 라인의 venue 표기 파라미터화. 기본값 = 기존 문자열
+        # 바이트 동일 (바이낸스 경로 무변경). Coinbase 등은 "BTC-USD (Coinbase)" 주입
+        self._venue_label = venue_label if venue_label is not None else f"{config.symbol} (Binance Spot)"
         self._alerts = config.alerts
         self._thresholds = config.thresholds
         self._bucket_size = Decimal(str(config.alerts.bucket_size_usdt))
@@ -281,7 +285,7 @@ class AlertDispatcher:
         occurred = datetime.fromtimestamp(recorded_at, _KST)
         return (
             f"🟢 {_D5_INTENT_LABEL[event.side]} 실체결 확인 (케이스 1)\n"
-            f"심볼: {self._symbol} (Binance Spot)\n"
+            f"심볼: {self._venue_label}\n"
             f"{self._d5_intent_line(event)}\n"
             f"체결: {_fmt_approx(traded_qty)} BTC (실현률 {event.level_realized_rate * 100:.0f}%)\n"
             f"등록→확정: {_fmt_duration(event.registered_seconds)}\n"
@@ -329,7 +333,7 @@ class AlertDispatcher:
         }[event.kind]
         return (
             f"🛡 {title} (D4)\n"
-            f"심볼: {self._symbol} (Binance Spot)\n"
+            f"심볼: {self._venue_label}\n"
             f"레벨: {_fmt(event.price)} ({_SIDE_LABEL[event.side]}) · "
             f"기준 {_fmt(event.base_qty)} BTC (스트릭 개시 표시크기)\n"
             f"흡수 {_fmt_approx(event.absorbed_total)} BTC = "
@@ -485,7 +489,7 @@ class AlertDispatcher:
     def _format_d1_appeared(self, event: D1Appeared) -> str:
         return (
             f"🧱 대형 벽 출현 (D1)\n"
-            f"심볼: {self._symbol} (Binance Spot)\n"
+            f"심볼: {self._venue_label}\n"
             f"레벨: {_fmt(event.price)} ({_SIDE_LABEL[event.side]}) · 표시 {_fmt(event.qty)} BTC\n"
             f"지속 {event.persisted_seconds:.0f}s 확인 (임계 {self._thresholds.persist_seconds:g}s)"
         )
@@ -493,7 +497,7 @@ class AlertDispatcher:
     def _format_d1_removed(self, event: D1Removed) -> str:
         return (
             f"🧱 대형 벽 소멸 — {_ATTRIBUTION_LABEL[event.attribution]} (D1)\n"
-            f"심볼: {self._symbol} (Binance Spot)\n"
+            f"심볼: {self._venue_label}\n"
             f"레벨: {_fmt(event.price)} ({_SIDE_LABEL[event.side]}) · "
             f"피크 {_fmt(event.peak_qty)} BTC → 잔량 {_fmt(event.last_qty)} BTC\n"
             f"레벨 체결 누적: {_fmt(event.cum_traded)} BTC"
@@ -502,7 +506,7 @@ class AlertDispatcher:
     def _format_feed_stale(self, event: StreamStale) -> str:
         return (
             f"🛑 피드 정지 (FEED_STALE)\n"
-            f"심볼: {self._symbol} (Binance Spot)\n"
+            f"심볼: {self._venue_label}\n"
             f"스트림: {event.stream} — {event.silent_seconds:.0f}초간 수신 없음\n"
             f"판정 중단(epoch 종료) — 수신 재개 시 자동 복귀"
         )
@@ -511,7 +515,7 @@ class AlertDispatcher:
         delta = event.buy_qty - event.sell_qty
         return (
             f"⚡ 볼륨 버스트 시작 (D2)\n"
-            f"심볼: {self._symbol} (Binance Spot)\n"
+            f"심볼: {self._venue_label}\n"
             f"{self._thresholds.window_seconds:g}초 체결 {_fmt_approx(event.window_qty)} BTC "
             f"(매수 {_fmt_approx(event.buy_qty)} / 매도 {_fmt_approx(event.sell_qty)} · Δ {delta:+.1f})\n"
             f"기준선: 분당 {_fmt_approx(event.baseline_per_minute)} BTC "
@@ -551,7 +555,7 @@ class AlertDispatcher:
         text = (
             f"⚡ 볼륨 버스트 요약 (D2) — {duration_min}분 "
             f"(KST {start:%H:%M}~{end:%H:%M})\n"
-            f"심볼: {self._symbol} (Binance Spot)\n"
+            f"심볼: {self._venue_label}\n"
             f"누적 {_fmt_approx(event.total_qty)} BTC "
             f"(매수 {_fmt_approx(event.buy_qty)} / 매도 {_fmt_approx(event.sell_qty)} · Δ {delta:+.1f}) — "
             f"평상시 {duration_min}분치의 {multiple:.1f}배\n"

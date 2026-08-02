@@ -802,3 +802,23 @@ def test_sender_chat_id_override_routes_response():
     run_sender_until(sender, lambda: len(post.calls) >= 2)
     assert post.calls[0][1]["chat_id"] != "777001"  # 기본 — 생성자 chat_id
     assert post.calls[1][1]["chat_id"] == "777001"  # 오버라이드
+
+
+# ---- v1.16 venue 표기 파라미터화 (PRD §9.3) ----
+
+
+def test_venue_label_default_is_binance_spot():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(make_config(), sender, monotonic=FakeClock())
+    dispatcher.dispatch(appeared())
+    assert "심볼: BTC/USDT (Binance Spot)" in sender.sent[0]
+
+
+def test_venue_label_override():
+    sender = FakeSender()
+    dispatcher = AlertDispatcher(
+        make_config(), sender, monotonic=FakeClock(), venue_label="BTC-USD (Coinbase)"
+    )
+    dispatcher.dispatch(appeared())
+    assert "심볼: BTC-USD (Coinbase)" in sender.sent[0]
+    assert "Binance Spot" not in sender.sent[0]
