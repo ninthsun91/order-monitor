@@ -79,6 +79,16 @@ class WatchConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class ExchangeConfig:
+    """v1.16 — 신규 거래소별 설정 (PRD §5.5·§10). 바이낸스는 기존 top-level 키 유지."""
+
+    symbol: str
+    size_threshold_btc: float
+    record_min_qty_btc: float
+    band_pct: float  # 레지스트리 등록 가격대역 (full-book 원거리 쓰레기 주문 차단)
+
+
+@dataclasses.dataclass(frozen=True)
 class AppConfig:
     symbol: str
     thresholds: ThresholdsConfig
@@ -87,10 +97,14 @@ class AppConfig:
     watch: WatchConfig
     telegram: TelegramConfig
     watchdog: WatchdogConfig
+    # v1.16 — 선택 섹션: 부재 시 빈 dict = 바이낸스 단독 (기존 config 무변경 기동 보장)
+    exchanges: dict[str, ExchangeConfig] = dataclasses.field(default_factory=dict)
 
 
 _TOP_LEVEL_STR_FIELDS = ("symbol",)
 _TOP_LEVEL_SECTION_FIELDS = ("thresholds", "alerts", "wall_tracker", "watch", "telegram", "watchdog")
+# v1.16 — M8은 coinbase만. kraken/bitfinex는 어댑터 지원 시 추가 (미지 거래소명은 거부)
+_SUPPORTED_EXCHANGES = ("coinbase",)
 
 
 def _check_value_type(section: str, name: str, value: object, expected_type: type) -> object:
@@ -220,6 +234,20 @@ def _validate_invariants(config: AppConfig) -> None:
     if not config.telegram.command_chat_ids:
         raise ConfigError("'telegram.command_chat_ids' must contain at least one chat id")
 
+    # v1.16 — 거래소별 섹션 (PRD §10)
+    for name, exch in config.exchanges.items():
+        if not exch.symbol:
+            raise ConfigError(f"'exchanges.{name}.symbol' must be non-empty")
+        if exch.size_threshold_btc <= 0 or exch.record_min_qty_btc <= 0:
+            raise ConfigError(f"'exchanges.{name}' thresholds must be positive")
+        if exch.record_min_qty_btc >= exch.size_threshold_btc:
+            raise ConfigError(
+                f"'exchanges.{name}.record_min_qty_btc' must be less than"
+                f" 'exchanges.{name}.size_threshold_btc'"
+            )
+        if not 0 < exch.band_pct <= 1:
+            raise ConfigError(f"'exchanges.{name}.band_pct' must be in (0, 1], got {exch.band_pct}")
+
 
 def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path)
@@ -231,6 +259,20 @@ def load_config(path: str | Path) -> AppConfig:
 
     if not isinstance(raw, dict):
         raise ConfigError("config file must contain a top-level mapping")
+
+    # v1.16 — exchanges는 선택 섹션 (부재 = 바이낸스 단독, 기존 배포 config 무변경 기동)
+    exchanges_raw = raw.pop("exchanges", None)
+    exchanges: dict[str, ExchangeConfig] = {}
+    if exchanges_raw is not None:
+        if not isinstance(exchanges_raw, dict):
+            raise ConfigError("'exchanges' must be a mapping")
+        unknown = [key for key in exchanges_raw if key not in _SUPPORTED_EXCHANGES]
+        if unknown:
+            raise ConfigError(f"'exchanges' has unsupported exchanges: {', '.join(sorted(unknown))}")
+        exchanges = {
+            name: _build_section(ExchangeConfig, exchanges_raw[name], f"exchanges.{name}")
+            for name in exchanges_raw
+        }
 
     known = _TOP_LEVEL_STR_FIELDS + _TOP_LEVEL_SECTION_FIELDS
     missing = [key for key in known if key not in raw]
@@ -253,6 +295,7 @@ def load_config(path: str | Path) -> AppConfig:
         watch=_build_section(WatchConfig, raw["watch"], "watch"),
         telegram=_build_section(TelegramConfig, raw["telegram"], "telegram"),
         watchdog=_build_section(WatchdogConfig, raw["watchdog"], "watchdog"),
+        exchanges=exchanges,
     )
     _validate_invariants(config)
     return config

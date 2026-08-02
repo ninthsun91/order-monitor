@@ -308,3 +308,73 @@ def test_telegram_command_chat_ids_not_list_raises(tmp_path):
 
     with pytest.raises(ConfigError, match="command_chat_ids' must be a list"):
         load_config(bad_config)
+
+
+# ---- v1.16 exchanges 섹션 (PRD §10) ----
+
+
+def test_exchanges_section_absent_yields_empty_dict(tmp_path):
+    # 섹션 부재 = 바이낸스 단독 — 기존 배포 config 무변경 기동 (PRD §10 v1.16)
+    text = EXAMPLE_CONFIG.read_text()
+    lines = text.splitlines(keepends=True)
+    start = next(i for i, line in enumerate(lines) if line.startswith("exchanges:"))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("telegram:"))
+    stripped = "".join(lines[:start] + lines[end:])
+    path = tmp_path / "config.yaml"
+    path.write_text(stripped)
+    config = load_config(path)
+    assert config.exchanges == {}
+
+
+def test_exchanges_coinbase_parses(tmp_path):
+    config = load_config(EXAMPLE_CONFIG)
+    assert set(config.exchanges) == {"coinbase"}
+    coinbase = config.exchanges["coinbase"]
+    assert coinbase.symbol == "BTC-USD"
+    assert coinbase.size_threshold_btc == 500.0
+    assert coinbase.record_min_qty_btc == 50.0
+    assert coinbase.band_pct == 0.20
+
+
+def test_exchanges_unsupported_name_raises(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(EXAMPLE_CONFIG.read_text().replace("  coinbase:", "  kraken:"))
+    with pytest.raises(ConfigError, match="unsupported exchanges: kraken"):
+        load_config(path)
+
+
+def test_exchanges_unknown_key_raises(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        EXAMPLE_CONFIG.read_text().replace("    band_pct: 0.20", "    band_pct: 0.20\n    bogus: 1")
+    )
+    with pytest.raises(ConfigError, match="exchanges.coinbase' has unknown keys: bogus"):
+        load_config(path)
+
+
+def test_exchanges_missing_key_raises(tmp_path):
+    path = tmp_path / "config.yaml"
+    lines = [
+        line
+        for line in EXAMPLE_CONFIG.read_text().splitlines(keepends=True)
+        if not line.startswith("    record_min_qty_btc: 50")
+    ]
+    path.write_text("".join(lines))
+    with pytest.raises(ConfigError, match="exchanges.coinbase' is missing required keys"):
+        load_config(path)
+
+
+def test_exchanges_record_min_above_threshold_raises(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        EXAMPLE_CONFIG.read_text().replace("    record_min_qty_btc: 50", "    record_min_qty_btc: 600")
+    )
+    with pytest.raises(ConfigError, match="exchanges.coinbase.record_min_qty_btc' must be less"):
+        load_config(path)
+
+
+def test_exchanges_band_pct_out_of_range_raises(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(EXAMPLE_CONFIG.read_text().replace("    band_pct: 0.20", "    band_pct: 1.5"))
+    with pytest.raises(ConfigError, match="exchanges.coinbase.band_pct' must be in"):
+        load_config(path)

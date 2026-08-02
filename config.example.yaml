@@ -47,6 +47,13 @@ watch:                           # PRD v1.13 — W 주시 레벨 관측기 (§8 
   invalidate_buffer_pct: 0.0025  # 무효화 마감가 버퍼 (0.25%)
   report_interval_seconds: 600   # 주기 리포트 간격 (5~15분 권장 대역)
 
+exchanges:                       # PRD v1.16 — 멀티 거래소 (§5.5). 섹션/거래소 미기재 = 해당 거래소 미모니터링 (바이낸스 단독 = 기존 동작)
+  coinbase:                      # M8 1차 대상 — D1+D3+D5만 (D2·D4·W는 바이낸스 전용)
+    symbol: BTC-USD
+    size_threshold_btc: 500      # 사용자 지정 초기값 (2026-08-02) — 바이낸스 1000의 절반, 병행 관측 후 조정
+    record_min_qty_btc: 50       # 관측 플로어 — 바이낸스 100의 절반
+    band_pct: 0.20               # 레지스트리 등록 가격대역 (현재가 ±20%) — full-book 원거리 쓰레기 주문 차단 (§5.5)
+
 telegram:
   chat_id: "..."                 # 알림 발송 대상 (단일). 토큰은 TELEGRAM_BOT_TOKEN env로
   command_chat_ids: ["..."]      # v1.14 — 명령 수신 허용 chat 목록 (채널/그룹/DM id, 최소 1개. PRD §9.5)
