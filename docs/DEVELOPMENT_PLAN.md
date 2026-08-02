@@ -19,6 +19,7 @@
 | M5 | Watchdog + 배포 | 🟠 검증 대기 | (7일 무인 운영 감사 통과 2026-07-22, 행 훈련만 잔여) |
 | M6 | SQLite 영속화 + 임계치 튜닝 | ⬜ 미착수 | |
 | M7 | W 주시 레벨 관측기 + 텔레그램 수신 명령 (PRD v1.13) | 🟠 검증 대기 | (구현 완료 2026-07-23, 실전 주시 1건 사이클 확인 잔여) |
+| M8 | 멀티 거래소 확장 1단계 — 공통 기반 + Coinbase 어댑터, D1+D3+D5 (PRD v1.16 §5.5) | ⬜ 미착수 | |
 
 상태 표기: ⬜ 미착수 · 🟡 진행 중 · 🟠 검증 대기 · ✅ 완료 · ⏸ 보류
 
@@ -70,6 +71,30 @@ PRD §8 W·§9.5·§12.2가 기준. 착수 전 v1.13 개정 이력과 결정 기
 
 ---
 
+## M8 — 멀티 거래소 확장 1단계: 공통 기반 + Coinbase 어댑터 (PRD v1.16)
+
+PRD §5.5(어댑터 계약·채널 매핑·한계 수용)·§12(마이그레이션 4건)·§10(`exchanges` 섹션)이 기준. 착수 전 v1.16 개정 이력과 결정 기록 2026-08-02를 읽을 것. 스코프 불변식: **D1+D3+D5만, 로컬 풀북 유지 금지, 거래소 간 실시간 결합 금지** (§5.5).
+
+공통 기반 (거래소 수와 무관하게 1회):
+
+- [ ] DB 마이그레이션 4건 (PRD §12 v1.16): `walls` PK 재생성 `(exchange, side, price)` · `events` ALTER `exchange` 컬럼+인덱스 · `intents` PK 재생성 `(exchange, run_started_at, intent_id)` · `alerts_outbox` UNIQUE 재생성 — 기존 행 전부 `'binance'` 백필. 재생성은 신규 테이블 생성→복사→rename (v1.8 ALTER 선례는 events에만 해당)
+- [ ] config `exchanges` 섹션 (PRD §10): 거래소별 `symbol`/`size_threshold_btc`/`record_min_qty_btc`/`band_pct`, 엄격 `_build_section` 패턴 + 불변조건 3건. 섹션 미기재 = 바이낸스 단독(기존 config 무변경 기동 보장)
+- [ ] service 다중 파이프라인 재배선: 거래소별 독립 인스턴스 묶음(state·detectors·health/epoch), 한 거래소 장애가 타 거래소 판정에 불침범. 알림 dispatcher venue 표기 파라미터화 (§9.3)
+- [ ] persistence 계층 exchange 스코프 배선: WallStore load/sync·IntentStore·EventStore·outbox 전부 자기 거래소 행만
+
+Coinbase 어댑터 (PRD §5.5 표):
+
+- [ ] WS 클라이언트: `level2_batch` + `matches` + `ticker` 구독, 재연결·keepalive (기존 ingestion 골격 재사용)
+- [ ] 정규화 파서: 원시 프레임 → `DiffDepthEvent`(절대잔량) / `AggTradeEvent` / top-1 `DepthSnapshot`(ticker 합성)
+- [ ] 레지스트리 등록 가격대역 필터 `band_pct` — full-book 원거리 쓰레기 주문 차단 (실측: $0.01에 65,000 BTC 매수 주문 실재)
+- [ ] epoch 규칙: 시퀀스 갭·heartbeat trade_id 갭 → epoch 종료 (diff U/u 갭 등가). `matches` 드랍의 REST 갭필 보정은 실측 드랍률 보고 결정 (PRD §14)
+- [ ] replay: Coinbase 원시 프레임 픽스처 캡처(`scripts/capture_stream.py` 확장) + 골든 — 재연결·순서 역전·갭 시나리오 포함 (§13 필수 시나리오 준용)
+- [ ] 낮은 관측 플로어로 events 분포 수집 개시 → 거래소별 임계 확정 (오픈 퀘스천 #6)
+
+**완료 기준 (PRD §13 M8)**: Coinbase replay 통과 + **기존 바이낸스 replay 골든 무변경** + 실전 Coinbase D1 출현→소멸 사이클 1건 + 분포 수집 개시. Kraken·Bitfinex 어댑터는 M8 완료 후 후속 마일스톤.
+
+---
+
 ## 오픈 퀘스천 트래킹 (PRD §15)
 
 | # | 질문 | 결정 시점 | 상태 | 결론 |
@@ -79,3 +104,4 @@ PRD §8 W·§9.5·§12.2가 기준. 착수 전 v1.13 개정 이력과 결정 기
 | 3 | 매도 의도(ask 벽) 대칭 지원 v1 포함 여부 (PRD는 포함 권장) | M0~M1 설계 시 | ✅ 확정 | v1 포함 — 벽 레지스트리 설계 논의(2026-07-11)에서 사용자가 ask/bid 양측 추적을 전제로 함. 구현 비용도 낮음 |
 | 4 | 알림 언어/포맷: 한국어 고정 vs 템플릿화 | M2 착수 시 | ✅ 확정 | 한국어 고정 (2026-07-12, 결정 기록 참고 — 템플릿화는 요구 없는 유연성으로 기각) |
 | 5 | Bookmap 대조 기록 방식 (스크린샷 vs 녹화) | M3 착수 시 | ✅ 종결 (기각) | Bookmap 대조 자체를 M3에서 제외 (2026-07-13, 사용자 확정 — 결정 기록 참고). M3 완료 기준은 결정적 replay 테스트로 일원화 |
+| 6 | 신규 거래소별 `size_threshold_btc`·`record_min_qty_btc` 확정값 (PRD §15 #6, v1.16) | M8 분포 수집 후 | ⬜ 미결 | 1000은 바이낸스 스코프 값 — 실측(2026-08-02) 신규 3곳 최대 오더 30~60 BTC. §10의 100/10은 잠정 표기 |
