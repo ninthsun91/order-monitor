@@ -19,7 +19,7 @@
 | M5 | Watchdog + 배포 | 🟠 검증 대기 | (7일 무인 운영 감사 통과 2026-07-22, 행 훈련만 잔여) |
 | M6 | SQLite 영속화 + 임계치 튜닝 | ⬜ 미착수 | |
 | M7 | W 주시 레벨 관측기 + 텔레그램 수신 명령 (PRD v1.13) | 🟠 검증 대기 | (구현 완료 2026-07-23, 실전 주시 1건 사이클 확인 잔여) |
-| M8 | 멀티 거래소 확장 1단계 — 공통 기반 + Coinbase 어댑터, D1+D3+D5 (PRD v1.16 §5.5) | ⬜ 미착수 | |
+| M8 | 멀티 거래소 확장 1단계 — 공통 기반 + Coinbase 어댑터, D1+D3+D5 (PRD v1.16 §5.5) | 🟠 검증 대기 | (구현 완료 2026-08-02, 실전 Coinbase D1 사이클 1건 + 분포 수집 잔여 — 배포 후) |
 
 상태 표기: ⬜ 미착수 · 🟡 진행 중 · 🟠 검증 대기 · ✅ 완료 · ⏸ 보류
 
@@ -77,21 +77,25 @@ PRD §5.5(어댑터 계약·채널 매핑·한계 수용)·§12(마이그레이�
 
 공통 기반 (거래소 수와 무관하게 1회):
 
-- [ ] DB 마이그레이션 4건 (PRD §12 v1.16): `walls` PK 재생성 `(exchange, side, price)` · `events` ALTER `exchange` 컬럼+인덱스 · `intents` PK 재생성 `(exchange, run_started_at, intent_id)` · `alerts_outbox` UNIQUE 재생성 — 기존 행 전부 `'binance'` 백필. 재생성은 신규 테이블 생성→복사→rename (v1.8 ALTER 선례는 events에만 해당)
-- [ ] config `exchanges` 섹션 (PRD §10): 거래소별 `symbol`/`size_threshold_btc`/`record_min_qty_btc`/`band_pct`, 엄격 `_build_section` 패턴 + 불변조건 3건. 섹션 미기재 = 바이낸스 단독(기존 config 무변경 기동 보장)
-- [ ] service 다중 파이프라인 재배선: 거래소별 독립 인스턴스 묶음(state·detectors·health/epoch), 한 거래소 장애가 타 거래소 판정에 불침범. 알림 dispatcher venue 표기 파라미터화 (§9.3)
-- [ ] persistence 계층 exchange 스코프 배선: WallStore load/sync·IntentStore·EventStore·outbox 전부 자기 거래소 행만
+- [x] DB 마이그레이션 4건 (PRD §12 v1.16) → **완료 2026-08-02** (`walls` PK 재생성 `(exchange, side, price)` — v1.8 ALTER를 재생성보다 선행 · `events` ALTER + 거래소 축 인덱스 2개(기존 인덱스는 크로스 분석용 유지) · `intents` PK 재생성 · `alerts_outbox` UNIQUE 재생성 + id 보존 복사(mark_sent 연속성). 'binance' 백필, 전 store `__init__(path, exchange="binance")` 바인딩 — 기존 호출부 무변경, busy_timeout 방어)
+- [x] config `exchanges` 섹션 (PRD §10) → **완료 2026-08-02** (선택 섹션: `raw.pop` 방식으로 부재 = 빈 dict = 바이낸스 단독. M8은 `coinbase`만 허용 — 미지 거래소명 거부. 초기값 500/50/0.20 — 사용자 지정 2026-08-02)
+- [x] service 다중 파이프라인 재배선 → **완료 2026-08-02** (`MonitorService(exchange="binance" 기본, telegram_sender 주입)` — 기본값 = 종전 동작, Pipeline 클래스 추출 기각(결정 기록). coinbase 분기: D2·D4·W·candles=None 게이팅, 태스크 소유권 분리(프라이머리만 telegram.run/heartbeat, 바이낸스만 wall_report/수신 명령/D2 부트스트랩), main.py `run_all` 러너. dispatcher venue 파라미터화 — 기본값 기존 문자열 바이트 동일)
+- [x] persistence 계층 exchange 스코프 배선 → **완료 2026-08-02** (startup()에서 전 store에 exchange 전달, watch/kv는 바이낸스만 오픈)
 
 Coinbase 어댑터 (PRD §5.5 표):
 
-- [ ] WS 클라이언트: `level2_batch` + `matches` + `ticker` 구독, 재연결·keepalive (기존 ingestion 골격 재사용)
-- [ ] 정규화 파서: 원시 프레임 → `DiffDepthEvent`(절대잔량) / `AggTradeEvent` / top-1 `DepthSnapshot`(ticker 합성)
-- [ ] 레지스트리 등록 가격대역 필터 `band_pct` — full-book 원거리 쓰레기 주문 차단 (실측: $0.01에 65,000 BTC 매수 주문 실재)
-- [ ] epoch 규칙: 시퀀스 갭·heartbeat trade_id 갭 → epoch 종료 (diff U/u 갭 등가). `matches` 드랍의 REST 갭필 보정은 실측 드랍률 보고 결정 (PRD §14)
-- [ ] replay: Coinbase 원시 프레임 픽스처 캡처(`scripts/capture_stream.py` 확장) + 골든 — 재연결·순서 역전·갭 시나리오 포함 (§13 필수 시나리오 준용)
-- [ ] 낮은 관측 플로어로 events 분포 수집 개시 → 거래소별 임계 확정 (오픈 퀘스천 #6)
+- [x] WS 클라이언트 → **완료 2026-08-02** (`ingestion/coinbase.py` — 구독 프레임 + 백오프/keepalive는 Binance 골격 동일, `coinbase:<product>@<channel>` 합성 스트림명)
+- [x] 정규화 파서 → **완료 2026-08-02** (snapshot/l2update→DiffDepthEvent — changes는 [side,price,size] 트리플·절대잔량, match→AggTradeEvent — **side=maker side, 라이브 캡처 교차 검증**, ticker→top-1 DepthSnapshot. heartbeat/subscriptions 무이벤트. update id 0 고정 — U/u 검사 비활성. `parse_stream_message` 위임 라우팅. + LevelTracker `create_on_trade_for_retained` — top-1 스냅샷 환경 cum 누락 해소, 결정 기록)
+- [x] 레지스트리 등록 가격대역 필터 `band_pct` → **완료 2026-08-02** (신규 등록에만, 추적 중 가격은 전 이벤트 처리. **이벤트 유도 mid 폴백** 추가 — 기동 직후 snapshot이 첫 ticker 선행 시 쓰레기 주문 D1 오알림 방어, 구현 중 발견 결함. 실측: $0.01에 65,000 BTC 매수 주문)
+- [x] epoch 규칙 → **완료 2026-08-02** (SessionEpochTracker 파라미터화 — streams/stale_thresholds 주입, ticker는 체결 주도라 trade_stale 임계. `check_trade_continuity` — match trade_id 갭 시 `trade_gap` 종료, **unconfirmed 미마킹**(체결 손실 ≠ diff 청취 공백), disconnect 시 기준점 리셋. REST 갭필 보정은 실측 드랍률 보고 결정 — 잔여 관찰)
+- [x] replay → **완료 2026-08-02** (합성 3종: D1 풀사이클(출현→진행 20/40→확정 60% 래치→D3→FILLED 소멸→CONFIRMED_CLOSED)·재연결(INTERRUPTED+unconfirmed→full snapshot 재확인→재발화)·trade_id 갭 + 라이브 60s 골든(벽 10개, D1 무발화 — 임계 미달 실측 정합) + 같은 DB 격리 재생 + 이중 재생 결정성. `capture_stream.py --exchange coinbase` 확장)
+- [ ] events 분포 수집 → 임계 500/50 조정 검토 (오픈 퀘스천 #6 — **배포 후**, 타 툴 병행 관측)
 
-**완료 기준 (PRD §13 M8)**: Coinbase replay 통과 + **기존 바이낸스 replay 골든 무변경** + 실전 Coinbase D1 출현→소멸 사이클 1건 + 분포 수집 개시. Kraken·Bitfinex 어댑터는 M8 완료 후 후속 마일스톤.
+**완료 기준 (PRD §13 M8)**: Coinbase replay 통과 ✅ + **기존 바이낸스 replay 골든 무변경** ✅ + 실전 Coinbase D1 출현→소멸 사이클 1건 (**잔여** — 배포 후) + 분포 수집 개시 (**잔여** — 배포 후). Kraken·Bitfinex 어댑터는 M8 완료 후 후속 마일스톤.
+
+검증 기록:
+- 2026-08-02 M8 구현: pytest 496건 전건 통과 (신규 57건 — persistence 마이그레이션/격리 8, config exchanges 7, wall_registry band 7, dispatcher venue 2, health 주입 3, coinbase 파서/클라이언트/trade갭/LevelTracker 15, service 파이프라인 6(게이팅·epoch·venue·band·동일 DB 격리), replay coinbase 10 — 시나리오 골든 + 결정성). **기존 바이낸스 replay 11건 골든 무변경** (매 커밋 게이트로 확인). Coinbase 스키마는 30s+60s 라이브 캡처로 실검증 — match side=maker side(ticker taker side와 교차), l2update 절대잔량 트리플, trade_id 105건 연속 무갭, snapshot 시퀀스 부재(로컬 카운터 불필요 — 0 고정)
+- **배포 주의**: VPS config.yaml에 `exchanges:` 섹션 추가 시 Coinbase 파이프라인 기동 (선택 섹션 — 미추가 시 바이낸스 단독, 기존 동작 무변경). DB 마이그레이션은 기동 시 자동 (기존 DB 사본 리허설 완료 — 구스키마 테스트로 검증)
 
 ---
 
@@ -104,4 +108,4 @@ Coinbase 어댑터 (PRD §5.5 표):
 | 3 | 매도 의도(ask 벽) 대칭 지원 v1 포함 여부 (PRD는 포함 권장) | M0~M1 설계 시 | ✅ 확정 | v1 포함 — 벽 레지스트리 설계 논의(2026-07-11)에서 사용자가 ask/bid 양측 추적을 전제로 함. 구현 비용도 낮음 |
 | 4 | 알림 언어/포맷: 한국어 고정 vs 템플릿화 | M2 착수 시 | ✅ 확정 | 한국어 고정 (2026-07-12, 결정 기록 참고 — 템플릿화는 요구 없는 유연성으로 기각) |
 | 5 | Bookmap 대조 기록 방식 (스크린샷 vs 녹화) | M3 착수 시 | ✅ 종결 (기각) | Bookmap 대조 자체를 M3에서 제외 (2026-07-13, 사용자 확정 — 결정 기록 참고). M3 완료 기준은 결정적 replay 테스트로 일원화 |
-| 6 | 신규 거래소별 `size_threshold_btc`·`record_min_qty_btc` 확정값 (PRD §15 #6, v1.16) | M8 분포 수집 후 | ⬜ 미결 | 1000은 바이낸스 스코프 값 — 실측(2026-08-02) 신규 3곳 최대 오더 30~60 BTC. §10의 100/10은 잠정 표기 |
+| 6 | 신규 거래소별 `size_threshold_btc`·`record_min_qty_btc` 조정값 (PRD §15 #6, v1.16) | 배포 후 분포·병행 관측 | 🟡 초기값 확정 | **초기값 = 사용자 지정 500/50 (2026-08-02, 바이낸스의 절반)** — events 분포 수집 + 타 툴 병행 관측으로 조정. 실측(2026-08-02): 신규 3곳 최대 오더 30~150 BTC |

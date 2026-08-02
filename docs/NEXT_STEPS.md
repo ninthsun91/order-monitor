@@ -1,6 +1,6 @@
 # NEXT_STEPS — 남은 작업 가이드
 
-작성: 2026-07-22, 갱신: 2026-08-02 (PRD v1.16 멀티 거래소 확장 스펙 확정 — M8 신설). **이 문서는 스냅샷이다** — 진행 상태의 진실원은 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)(체크박스), 결정의 진실원은 [DECISIONS.md](DECISIONS.md), 요구사항의 진실원은 [PRD_orderbook_intent_monitor.md](PRD_orderbook_intent_monitor.md)다. 작업 착수 전 반드시 두 문서의 해당 절을 먼저 읽을 것. 항목을 완료하면 DEVELOPMENT_PLAN 체크박스를 갱신하고 이 문서의 해당 절을 삭제/갱신한다.
+작성: 2026-07-22, 갱신: 2026-08-02 (M8 구현 완료 — 배포·실전 확인 잔여). **이 문서는 스냅샷이다** — 진행 상태의 진실원은 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)(체크박스), 결정의 진실원은 [DECISIONS.md](DECISIONS.md), 요구사항의 진실원은 [PRD_orderbook_intent_monitor.md](PRD_orderbook_intent_monitor.md)다. 작업 착수 전 반드시 두 문서의 해당 절을 먼저 읽을 것. 항목을 완료하면 DEVELOPMENT_PLAN 체크박스를 갱신하고 이 문서의 해당 절을 삭제/갱신한다.
 
 작업 규칙 (CLAUDE.md): 스펙 변경은 **문서(PRD·결정 기록) 갱신 → 사용자 확인 → 코드** 순서. 커밋은 의미 단위마다, push는 명시 요청 시에만.
 
@@ -31,9 +31,16 @@
 
 ---
 
-## 3. M8 — 멀티 거래소 확장 1단계 (스펙 확정, 미착수)
+## 3. M8 — 멀티 거래소 확장 1단계 (구현 완료 2026-08-02, 배포·실전 확인 잔여)
 
-**참조**: PRD v1.16 (§5.5 신설·§10 `exchanges`·§12 마이그레이션 4건·§13 M8) + DEVELOPMENT_PLAN "M8" 절 + 결정 기록 2026-08-02. 스코프: 공통 기반(다중 파이프라인 재배선·DB 마이그레이션·config) + Coinbase 어댑터, **D1+D3+D5만** (D2·D4·W 제외). 착수 순서 권장: DB 마이그레이션·config → service 재배선(바이낸스 단독으로 기존 replay 골든 무변경 확인) → Coinbase 어댑터 → 픽스처·골든 → 분포 수집. 신규 거래소 임계는 오픈 퀘스천 #6 (분포 수집 후 확정 — §10 값은 잠정). Kraken·Bitfinex는 M8 완료 후 후속 마일스톤.
+**참조**: PRD v1.16 (§5.5·§10·§12·§13 M8) + DEVELOPMENT_PLAN "M8" 절(체크박스·검증 기록 — pytest 496건, 바이낸스 replay 골든 무변경) + 결정 기록 2026-08-02 (2행: 스펙 확정 + 구현 확정 7건). 잔여:
+
+- **배포**: VPS config.yaml에 `exchanges:` 섹션 추가 (대조 기준 config.example.yaml — coinbase 500/50/0.20). 선택 섹션이라 미추가 시 바이낸스 단독으로 기존 동작 무변경. DB 마이그레이션은 기동 시 자동
+- **실전 확인** (완료 기준): Coinbase D1 출현→소멸 사이클 1건 — 배포 후 자연 진행. 현재 Coinbase 벽 스케일은 50~310 BTC(라이브 골든)라 500 임계 발화는 대형 벽 이벤트 대기
+- **분포 수집** (OQ #6): events DB의 coinbase 행 축적 → 500/50 조정 검토, 타 툴 병행 관측 병행
+- Coinbase `matches` 드랍의 REST 갭필 보정 여부는 실측 드랍률 보고 결정 (PRD §14 — trade_gap epoch 종료 빈도 관찰)
+
+Kraken·Bitfinex 어댑터는 M8 실증 후 후속 마일스톤 (한계비용 = 어댑터 한 벌 + 픽스처 + 임계 튜닝 — §5.5).
 
 ---
 
