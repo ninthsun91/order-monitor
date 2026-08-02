@@ -21,6 +21,7 @@ from order_monitor.ingestion.events import (
     AGG_TRADE_STREAM_SUFFIX,
     DEPTH20_STREAM_SUFFIX,
     DIFF_DEPTH_STREAM_SUFFIX,
+    AggTradeEvent,
     DiffDepthEvent,
     Event,
     stream_names,
@@ -68,6 +69,7 @@ class SessionEpochTracker:
         streams: tuple[str, str, str] | None = None,
         stale_thresholds: dict[str, float] | None = None,
         check_diff_continuity: bool = True,
+        check_trade_continuity: bool = False,
     ) -> None:
         """(v1.16) streams/stale_thresholds/check_diff_continuity로 거래소별 구성 주입.
 
@@ -76,6 +78,9 @@ class SessionEpochTracker:
           체결 주도 push라 trade_stale_seconds를 써야 한다 (PRD §5.5)
         - check_diff_continuity: 바이낸스 U/u 연속성 검사 — Coinbase l2 채널은
           시퀀스가 없어 비활성 (갭 대응은 trade_id 갭·staleness가 담당, PRD §5.5)
+        - check_trade_continuity: Coinbase match trade_id 연속성 검사 (+1 단위,
+          2026-08-02 라이브 캡처로 연속성 실증) — 갭이면 epoch 종료. **DiffListeningGap은
+          아님** (체결 손실이지 diff 청취 공백이 아님 — 레지스트리 unconfirmed 미마킹, §5.5)
         """
         depth, agg_trade, diff = streams if streams is not None else stream_names(symbol)
         self._depth_stream = depth
@@ -91,6 +96,7 @@ class SessionEpochTracker:
             }
         )
         self._check_diff_continuity = check_diff_continuity
+        self._check_trade_continuity = check_trade_continuity
         self._clock = clock
 
         self._subscribed = False
@@ -99,6 +105,7 @@ class SessionEpochTracker:
         self._last_recv: dict[str, float] = {}
         self._stale: set[str] = set()
         self._prev_final_update_id: int | None = None
+        self._prev_trade_id: int | None = None
 
     @property
     def epoch_active(self) -> bool:
@@ -122,8 +129,9 @@ class SessionEpochTracker:
         self._subscribed = False
         self._last_recv.clear()
         self._stale.clear()
-        # 재연결 후 첫 diff 이벤트는 연속성 기준점이 없음 (공백은 disconnect가 이미 처리)
+        # 재연결 후 첫 diff/체결 이벤트는 연속성 기준점이 없음 (공백은 disconnect가 이미 처리)
         self._prev_final_update_id = None
+        self._prev_trade_id = None
         return notices
 
     def on_event(self, stream: str, event: Event) -> list[Notice]:
@@ -138,6 +146,13 @@ class SessionEpochTracker:
                 # 누락 탐지 전용 — 이 이벤트 자체는 절대 잔량이라 상태 적재에는 유효
                 notices += self._end_epoch("diff_gap")
                 notices.append(DiffListeningGap(reason="u_gap"))
+
+        if isinstance(event, AggTradeEvent) and self._check_trade_continuity:
+            prev_trade = self._prev_trade_id
+            self._prev_trade_id = event.agg_trade_id
+            if prev_trade is not None and event.agg_trade_id != prev_trade + 1:
+                # 체결 손실 — cum_traded 신뢰 불가로 epoch 종료. diff 청취 공백은 아니다
+                notices += self._end_epoch("trade_gap")
 
         notices += self._maybe_start()
         return notices

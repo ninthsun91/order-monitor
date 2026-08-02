@@ -30,9 +30,19 @@ class TrackedLevel:
 
 
 class LevelTracker:
-    def __init__(self, retain: Callable[[Side, Decimal], bool] | None = None) -> None:
+    def __init__(
+        self,
+        retain: Callable[[Side, Decimal], bool] | None = None,
+        create_on_trade_for_retained: bool = False,
+    ) -> None:
+        """(v1.16) `create_on_trade_for_retained` — retain 대상(레지스트리 벽) 가격의
+        체결이 스냅샷보다 먼저 도착하면 엔트리를 생성해 누적한다. top-1 합성 스냅샷
+        (Coinbase ticker, PRD §5.5) 환경 전용: 창이 최우선호가 1레벨뿐이라 ticker가
+        체결에 후행하면 벽 가격 체결이 누락되어 D1 FILLED 귀속·D5 실현률이 과소
+        계상되는 경로의 해소. 바이낸스(top-20, 100ms)는 기본 False — 기존 동작 불변."""
         self._levels: dict[tuple[Side, Decimal], TrackedLevel] = {}
         self._retain = retain
+        self._create_on_trade_for_retained = create_on_trade_for_retained
 
     def apply_snapshot(self, snapshot: DepthSnapshot) -> None:
         seen: set[tuple[Side, Decimal]] = set()
@@ -54,6 +64,10 @@ class LevelTracker:
         """체결을 레벨에 귀속: sell-aggressor는 bid 레벨을, buy-aggressor는 ask 레벨을 소진."""
         level_side = Side.BUY if trade.aggressor_side is Side.SELL else Side.SELL
         entry = self._levels.get((level_side, trade.price))
+        if entry is None and self._create_on_trade_for_retained:
+            if self._retain is not None and self._retain(level_side, trade.price):
+                entry = TrackedLevel(price=trade.price, side=level_side, current_size=Decimal(0))
+                self._levels[(level_side, trade.price)] = entry
         if entry is not None:
             entry.cum_traded_at_level += trade.qty
 

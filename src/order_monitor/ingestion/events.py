@@ -156,10 +156,12 @@ def parse_diff_depth(data: object, receive_monotonic: float) -> DiffDepthEvent:
     )
 
 
-def parse_stream_message(message: object, receive_monotonic: float) -> tuple[str, Event]:
+def parse_stream_message(message: object, receive_monotonic: float) -> tuple[str, Event | None]:
     """combined stream 래핑 메시지 `{"stream": ..., "data": ...}`를 파싱한다.
 
     반환값은 `(stream_name, event)` — 스트림별 헬스 추적(PRD §5.4)이 스트림명을 쓴다.
+    (v1.16) `coinbase:` 접두 스트림은 Coinbase 파서로 위임 — 이벤트가 None일 수 있다
+    (heartbeat 등, 호출자가 스킵). 바이낸스 경로는 None을 반환하지 않는다.
     """
     if not isinstance(message, dict):
         raise NormalizationError("stream message must be a mapping")
@@ -167,6 +169,12 @@ def parse_stream_message(message: object, receive_monotonic: float) -> tuple[str
     if not isinstance(stream, str):
         raise NormalizationError("message.stream: expected string")
     data = _require(message, "data", "message")
+
+    if stream.startswith("coinbase:"):
+        # 지연 import — coinbase 모듈이 본 모듈의 이벤트 타입을 import (순환 회피)
+        from order_monitor.ingestion.coinbase import parse_coinbase_message
+
+        return parse_coinbase_message(data, receive_monotonic)
 
     if stream.endswith(DEPTH20_STREAM_SUFFIX):
         return stream, parse_depth20(data, receive_monotonic)
