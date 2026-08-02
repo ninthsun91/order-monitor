@@ -2,7 +2,7 @@
 # 설치 절차는 deploy/RUNBOOK.md 참고 (M5 — Restart=always, RestartSec=5)
 
 [Unit]
-Description=BTC orderbook intent monitor (D1/D2)
+Description=BTC orderbook intent monitor
 After=network-online.target
 Wants=network-online.target
 

@@ -146,6 +146,7 @@ class AlertDispatcher:
         d1_streak_gate: Callable[[D1Appeared], bool] | None = None,
         wall_lookup: Callable[[], list[Wall]] | None = None,
         venue_label: str | None = None,
+        exchange: str = "binance",
     ) -> None:
         # v1.16 (PRD §9.3) — 심볼 라인의 venue 표기 파라미터화. 기본값은 프라이머리
         # (binance — v1.17부터 exchanges 필수 포함이 스키마 보장) 기준으로 기존 문자열
@@ -155,6 +156,9 @@ class AlertDispatcher:
             if venue_label is not None
             else f"{config.exchanges['binance'].symbol} (Binance Spot)"
         )
+        # 억제 로그의 파이프라인 식별 (M8 실배포 로그 리뷰 후속) — 07-31류 쿨다운
+        # 진단 시 journalctl에서 거래소 구분이 필요하다
+        self._exchange = exchange
         self._alerts = config.alerts
         self._thresholds = config.thresholds
         self._bucket_size = Decimal(str(config.alerts.bucket_size_usdt))
@@ -191,14 +195,17 @@ class AlertDispatcher:
                 return False
             key = ("d1", event.side.value, self._bucket(event.price))
             if not self._deduper.should_send(key):
-                logger.info("alert suppressed by cooldown", extra={"dedup_key": repr(key)})
+                logger.info(
+                    "alert suppressed by cooldown",
+                    extra={"dedup_key": repr(key), "exchange": self._exchange},
+                )
                 return False
             # 스트릭당 1회 게이트는 쿨다운 뒤에 평가 — 쿨다운에 눌린 발화가
             # 스트릭을 소모(마킹)하지 않게 한다 (마킹은 실제 발송 시에만)
             if self._d1_streak_gate is not None and not self._d1_streak_gate(event):
                 logger.info(
                     "d1 appeared alert suppressed — streak already announced",
-                    extra={"side": event.side.value, "price": str(event.price)},
+                    extra={"side": event.side.value, "price": str(event.price), "exchange": self._exchange},
                 )
                 return False
             self._sender.enqueue(self._format_d1_appeared(event))
@@ -241,7 +248,10 @@ class AlertDispatcher:
             return False
 
         if not self._deduper.should_send(key):
-            logger.info("alert suppressed by cooldown", extra={"dedup_key": repr(key)})
+            logger.info(
+                "alert suppressed by cooldown",
+                extra={"dedup_key": repr(key), "exchange": self._exchange},
+            )
             return False
         self._sender.enqueue(text)
         return True

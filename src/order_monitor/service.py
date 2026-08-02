@@ -103,6 +103,21 @@ STALENESS_CHECK_INTERVAL_SECONDS = 1.0
 PRUNE_INTERVAL_SECONDS = 3600.0
 
 
+class _ExchangeLogAdapter(logging.LoggerAdapter):
+    """파이프라인 로그 전건에 exchange 필드 병합 (M8 실배포 로그 리뷰 후속).
+
+    두 파이프라인이 한 로그 스트림에 섞이면 `epoch started` 등이 어느 거래소인지
+    구분 불가(epoch_id도 트래커별 카운터). stdlib 기본 process()는 per-call extra를
+    통째로 덮어쓰므로 병합으로 구현한다.
+    """
+
+    def process(self, msg, kwargs):
+        extra = {"exchange": self.extra["exchange"]}
+        extra.update(kwargs.get("extra") or {})
+        kwargs["extra"] = extra
+        return msg, kwargs
+
+
 def seconds_until_boundary(now_epoch: float, interval_seconds: float) -> float:
     """다음 벽시계 경계(epoch 초의 interval 배수)까지 남은 시간.
 
@@ -148,6 +163,7 @@ class MonitorService:
         )
         self._symbol = symbol
         self._size_threshold = size_threshold
+        self._log = _ExchangeLogAdapter(logger, {"exchange": exchange})
 
         self.order_book = OrderBook()
         self.trade_window = TradeWindow(config.thresholds.window_seconds)
@@ -288,6 +304,7 @@ class MonitorService:
             d1_streak_gate=self._appeared_streak_unalerted,
             wall_lookup=self.wall_registry.walls,
             venue_label=venue_label,
+            exchange=exchange,
         )
         self._store: WallStore | None = None
         self._watch_store: WatchStore | None = None
@@ -319,9 +336,7 @@ class MonitorService:
             # 재시작 = 청취 공백 → 전체 unconfirmed (PRD §12.1 규칙 1)
             self.wall_registry.mark_all_unconfirmed()
             self._store.mark_all_unconfirmed(since=self._clock())
-        logger.info(
-            "wall registry restored", extra={"count": len(restored), "exchange": self._exchange}
-        )
+        self._log.info("wall registry restored", extra={"count": len(restored)})
 
         # D5 확정/추정 알림 outbox (PRD §9.4) — 같은 db 파일에 별도 테이블
         self._outbox = AlertsOutboxStore(self._db_path, exchange=self._exchange)
@@ -330,7 +345,7 @@ class MonitorService:
         for rowid, text in unsent:
             self.telegram.enqueue(text, on_sent=lambda rid=rowid: self._outbox.mark_sent(rid))
         if unsent:
-            logger.info("unsent alerts requeued from outbox", extra={"count": len(unsent)})
+            self._log.info("unsent alerts requeued from outbox", extra={"count": len(unsent)})
 
         # W 주시 레벨 복원 (PRD §12.2 — "상태 미복원" 예외 ②) + kv (§9.5 offset).
         # W는 바이낸스 전용 (§5.5 v1.16) — 비-바이낸스 파이프라인은 스토어도 안 연다
@@ -364,7 +379,7 @@ class MonitorService:
                     excursion_high=row.excursion_high,
                 )
                 restored_watches += 1
-            logger.info(
+            self._log.info(
                 "watch levels restored",
                 extra={"count": restored_watches, "unsent_finals": unsent_finals},
             )
@@ -376,7 +391,7 @@ class MonitorService:
         self._run_started_at = self._clock()
         interrupted = self._intent_store.mark_interrupted_at_startup(self._clock())
         if interrupted:
-            logger.info("stale intents marked interrupted", extra={"count": interrupted})
+            self._log.info("stale intents marked interrupted", extra={"count": interrupted})
 
     async def run(self) -> None:
         self.startup()
@@ -414,14 +429,14 @@ class MonitorService:
         try:
             bars = await fetch_minute_volumes(self._symbol, minutes)
         except BootstrapError as exc:
-            logger.warning(
+            self._log.warning(
                 "baseline bootstrap failed — D2 held until window fills",
                 extra={"error": str(exc), "minutes": minutes},
             )
             return
         self.volume_baseline.bootstrap(bars)
         mean = self.volume_baseline.per_minute_mean()
-        logger.info(
+        self._log.info(
             "volume baseline bootstrapped",
             extra={"bars": len(bars), "per_minute_mean": str(mean) if mean is not None else None},
         )
@@ -490,7 +505,7 @@ class MonitorService:
             # 등록/소멸 궤적 로그 (M6 관측 보완 — 준임계 벽 생애 기록, epoch 무관)
             # + D4 스트릭 수명 배선 (PRD §8 D4 v1.12 — 스트릭 = 레지스트리 활성 기간)
             for wall in diff_result.registrations:
-                logger.info(
+                self._log.info(
                     "wall registered",
                     extra={
                         "side": wall.side.value,
@@ -501,7 +516,7 @@ class MonitorService:
                 if self.d4 is not None:
                     self.d4.on_wall_registered(wall)
             for removal in removals:
-                logger.info(
+                self._log.info(
                     "wall removed",
                     extra={
                         "side": removal.wall.side.value,
@@ -569,7 +584,7 @@ class MonitorService:
             await asyncio.sleep(seconds_until_boundary(self._clock(), interval))
             text = self.build_wall_report()
             if text is None:
-                logger.info("wall report skipped — epoch inactive or book empty")
+                self._log.info("wall report skipped — epoch inactive or book empty")
                 continue
             self.telegram.enqueue(text)
 
@@ -620,7 +635,7 @@ class MonitorService:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("telegram receiver crashed — restarting after backoff")
+                self._log.exception("telegram receiver crashed — restarting after backoff")
                 await asyncio.sleep(60)
 
     def _handle_watch_command(self, lo: Decimal, hi: Decimal, arg: str) -> str:
@@ -629,7 +644,7 @@ class MonitorService:
             return f"이미 주시 중입니다: {arg}"
         assert self._watch_store is not None
         self._watch_store.upsert(data, flushed_at=self._clock())  # 등록 즉시 영속 (§12.2)
-        logger.info("watch registered", extra={"lo": str(lo), "hi": str(hi), "literal": arg})
+        self._log.info("watch registered", extra={"lo": str(lo), "hi": str(hi), "literal": arg})
         return f"👁 주시 등록: {arg}\n접촉 시 통지, 이후 활동 시 주기 리포트. 해소: /unwatch {arg}"
 
     def _handle_unwatch_command(self, lo: Decimal, hi: Decimal, arg: str) -> str:
@@ -639,7 +654,7 @@ class MonitorService:
         assert self._watch_store is not None
         self._watch_store.delete(lo, hi)
         self._emit(final)  # 수동 해소 최종 리포트 — 로그 + 발송 (§8 W)
-        logger.info("watch unregistered", extra={"lo": str(lo), "hi": str(hi)})
+        self._log.info("watch unregistered", extra={"lo": str(lo), "hi": str(hi)})
         return f"주시 해소: {arg}"
 
     async def _heartbeat_loop(self) -> None:
@@ -653,7 +668,7 @@ class MonitorService:
             try:
                 write_heartbeat(self._heartbeat_path)
             except OSError as exc:
-                logger.warning("heartbeat write failed", extra={"error": str(exc)})
+                self._log.warning("heartbeat write failed", extra={"error": str(exc)})
             await asyncio.sleep(self._config.watchdog.heartbeat_interval)
 
     async def _prune_loop(self) -> None:
@@ -663,7 +678,7 @@ class MonitorService:
             if pruned:
                 assert self._store is not None
                 self._store.delete_walls(pruned)
-                logger.info(
+                self._log.info(
                     "unconfirmed walls pruned",
                     extra={"count": len(pruned), "ttl_days": self._config.wall_tracker.ttl_days},
                 )
@@ -673,7 +688,9 @@ class MonitorService:
 
     def _emit(self, event: object) -> None:
         fields = _event_log_fields(event)
-        logger.info("detector event", extra=fields)
+        # 로그/DB 동일 필드 원칙 (persistence/events.py docstring) — payload에도 exchange 포함
+        fields["exchange"] = self._exchange
+        self._log.info("detector event", extra=fields)
         if self._event_store is not None:
             # 모든 디텍터 이벤트 DB 기록 (PRD §12, M6) — payload는 로그와 동일 필드
             self._event_store.record(
@@ -763,7 +780,7 @@ class MonitorService:
     def _handle_notices(self, notices: list[Notice]) -> None:
         for notice in notices:
             if isinstance(notice, EpochStarted):
-                logger.info("epoch started", extra={"epoch_id": notice.epoch_id})
+                self._log.info("epoch started", extra={"epoch_id": notice.epoch_id})
                 # D4 스트릭 재개시 — 활성 벽 전체 새 스트릭, R = 현재 last_qty
                 # (PRD §8 D4 v1.12 — 복원·epoch 생존 벽의 추적 사각 방지)
                 if self.d4 is not None:
@@ -775,7 +792,7 @@ class MonitorService:
                 self.d1.reset()
                 if self.d2 is not None:
                     if self.d2.episode_active:
-                        logger.warning("d2 episode discarded on epoch end")
+                        self._log.warning("d2 episode discarded on epoch end")
                     self.d2.reset()
                 self.contact.reset()
                 self.d3.reset()
@@ -790,12 +807,12 @@ class MonitorService:
                     self.candles.mark_gap()
                 if self.watch is not None:
                     self.watch.on_epoch_end()
-                logger.warning(
+                self._log.warning(
                     "epoch ended",
                     extra={"epoch_id": notice.epoch_id, "reason": notice.reason},
                 )
             elif isinstance(notice, StreamStale):
-                logger.warning(
+                self._log.warning(
                     "stream stale",
                     extra={"stream": notice.stream, "silent_seconds": notice.silent_seconds},
                 )
@@ -805,7 +822,7 @@ class MonitorService:
                 self.wall_registry.mark_all_unconfirmed()
                 if self._store is not None:
                     self._store.mark_all_unconfirmed(since=self._clock())
-                logger.warning(
+                self._log.warning(
                     "diff listening gap — wall registry marked unconfirmed",
                     extra={"reason": notice.reason, "walls": len(self.wall_registry)},
                 )

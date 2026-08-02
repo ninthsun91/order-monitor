@@ -903,3 +903,33 @@ def test_binance_and_coinbase_walls_isolated_in_same_db(tmp_path):
     )
     binance._store.close()
     coinbase._store.close()
+
+
+# ---- exchange 로그 필드 (M8 실배포 로그 리뷰 후속) ----
+
+
+def test_pipeline_logs_carry_exchange_field(tmp_path, caplog):
+    # 두 파이프라인이 한 로그 스트림에 섞여도 journalctl에서 exchange로 구분 가능해야 한다
+    config = load_config(EXAMPLE_CONFIG)
+    with caplog.at_level("INFO", logger="order_monitor.service"):
+        binance = make_service(config, tmp_path)
+        start_feed(binance)
+        coinbase = make_coinbase_service(config, tmp_path)
+        start_coinbase_feed(coinbase)
+
+    registered = [r for r in caplog.records if r.message == "wall registered"]
+    assert {getattr(r, "exchange", None) for r in registered} == {"binance", "coinbase"}
+    epochs = [r for r in caplog.records if r.message == "epoch started"]
+    assert {getattr(r, "exchange", None) for r in epochs} == {"binance", "coinbase"}
+    binance._store.close()
+    coinbase._store.close()
+
+
+def test_emit_payload_includes_exchange(tmp_path):
+    # 로그/DB 동일 필드 원칙 — events.payload에도 exchange 포함 (json_extract 불필요)
+    svc = make_coinbase_service(config_with(persist_seconds=1e-9), tmp_path)
+    start_coinbase_feed(svc)
+    svc.on_event(CB_L2, diff_event(0, 0, bids=[("60000.5", "70")], mono=0.1))  # D1 evaluate 트리거
+    rows = svc._event_store.rows("D1Appeared")
+    assert rows and rows[0]["payload"]["exchange"] == "coinbase"
+    svc._store.close()

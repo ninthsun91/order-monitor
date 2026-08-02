@@ -96,6 +96,7 @@ Coinbase 어댑터 (PRD §5.5 표):
 
 검증 기록:
 - 2026-08-02 M8 구현: pytest 496건 전건 통과 (신규 57건 — persistence 마이그레이션/격리 8, config exchanges 7, wall_registry band 7, dispatcher venue 2, health 주입 3, coinbase 파서/클라이언트/trade갭/LevelTracker 15, service 파이프라인 6(게이팅·epoch·venue·band·동일 DB 격리), replay coinbase 10 — 시나리오 골든 + 결정성). **기존 바이낸스 replay 11건 골든 무변경** (매 커밋 게이트로 확인). Coinbase 스키마는 30s+60s 라이브 캡처로 실검증 — match side=maker side(ticker taker side와 교차), l2update 절대잔량 트리플, trade_id 105건 연속 무갭, snapshot 시퀀스 부재(로컬 카운터 불필요 — 0 고정)
+- 2026-08-02 실배포 로그 리뷰 후속 2건: **파이프라인 로그 전건에 exchange 필드** (service `_ExchangeLogAdapter` 병합 + `_emit` payload — 두 파이프라인 혼재 스트림에서 `epoch started` 등 구분 불가·"로그/DB 동일 필드" 위배 해소, dispatcher 억제 로그 3곳 포함) + **systemd 유닛 Description "(D1/D2)" 잔재 제거** (VPS 반영: `cp deploy/order-monitor.service /etc/systemd/system/ && systemctl daemon-reload` — 다음 재시작 기회에). pytest 499건 + replay 골든 21건 무변경
 - **배포 주의 (v1.17 갱신)**: VPS config.yaml **전면 재편 필수** — top-level `symbol`·`thresholds.size_threshold_btc`·`wall_tracker.record_min_qty_btc` 삭제 + `exchanges:` 섹션(binance 필수, coinbase 선택) 추가. 엄격 스키마라 미수정 시 기동 실패 — config.example.yaml 대조. DB 마이그레이션은 기동 시 자동 (기존 DB 사본 리허설 완료 — 구스키마 테스트로 검증)
 
 ---
