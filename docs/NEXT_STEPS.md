@@ -38,6 +38,7 @@
 - **배포 (v1.17 갱신 — config 전면 재편 필수)**: VPS config.yaml에서 top-level `symbol`·`thresholds.size_threshold_btc`·`wall_tracker.record_min_qty_btc` 삭제 + `exchanges:` 섹션(binance 1000/100/0 필수, coinbase 500/50/0.20) 추가 — 대조 기준 config.example.yaml, **엄격 스키마라 미수정 시 기동 실패**. 로컬 config.yaml은 반영 완료. DB 마이그레이션은 기동 시 자동
 - **실전 확인** (완료 기준): Coinbase D1 출현→소멸 사이클 1건 — 배포 후 자연 진행. 현재 Coinbase 벽 스케일은 50~310 BTC(라이브 골든)라 500 임계 발화는 대형 벽 이벤트 대기
 - **분포 수집** (OQ #6): events DB의 coinbase 행 축적 → 500/50 조정 검토, 타 툴 병행 관측 병행
+- **호가벽 리포트 표시 규칙 관찰** (결정 기록 2026-08-03 — 잠정 스펙): 근접 5 / 거래소별 대형 전부 / 거래소별×사이드별 볼륨 탑3 합집합. 실사용 후 캡·규칙 재조정 예정
 - Coinbase `matches` 드랍의 REST 갭필 보정 여부는 실측 드랍률 보고 결정 (PRD §14 — trade_gap epoch 종료 빈도 관찰)
 
 Kraken·Bitfinex 어댑터는 M8 실증 후 후속 마일스톤 (한계비용 = 어댑터 한 벌 + 픽스처 + 임계 튜닝 — §5.5).

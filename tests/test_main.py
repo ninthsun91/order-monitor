@@ -32,10 +32,21 @@ def test_main_loads_config_and_starts_service(tmp_path, monkeypatch):
 
     monkeypatch.setattr("order_monitor.main.asyncio.run", fake_asyncio_run)
 
+    attached = []
+    orig_attach = MonitorService.attach_report_peer
+
+    def spy_attach(self, peer):
+        attached.append((self._exchange, peer._exchange))
+        orig_attach(self, peer)
+
+    monkeypatch.setattr(MonitorService, "attach_report_peer", spy_attach)
+
     main()
     logging.shutdown()
 
     assert launched == [True]
+    # 형제 벽의 리포트 합류 배선 (2026-08-03) — 프라이머리에 coinbase peer 부착
+    assert attached == [("binance", "coinbase")]
     lines = log_path.read_text().strip().splitlines()
     record = json.loads(lines[-1])
     assert record["message"] == "config loaded"

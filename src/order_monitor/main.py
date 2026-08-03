@@ -55,6 +55,8 @@ def main() -> None:
                 telegram_sender=service.telegram,
             )
         )
+    for peer in services[1:]:  # 형제 벽을 프라이머리 리포트에 합류 (표시 전용 — §5.5)
+        service.attach_report_peer(peer)
 
     async def run_all() -> None:
         async with asyncio.TaskGroup() as group:

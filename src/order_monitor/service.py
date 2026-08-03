@@ -52,7 +52,7 @@ from pathlib import Path
 from order_monitor.alerting.dispatcher import AlertDispatcher
 from order_monitor.alerting.telegram import TelegramSender
 from order_monitor.alerting.telegram_commands import TelegramReceiver
-from order_monitor.alerting.wall_report import format_wall_report
+from order_monitor.alerting.wall_report import ExchangeWallSnapshot, format_wall_report
 from order_monitor.config import AppConfig
 from order_monitor.detectors.contact import (
     ContactEpisodeTracker,
@@ -161,6 +161,11 @@ class MonitorService:
         venue_label = (
             f"{symbol} (Binance Spot)" if is_binance else f"{symbol} ({exchange.capitalize()})"
         )
+        # 호가벽 리포트 라인 태그 (다거래소 표시 집계 — wall_report.py 규칙 참조)
+        self._report_label = {"binance": "BN", "coinbase": "CB"}.get(
+            exchange, exchange[:2].upper()
+        )
+        self._report_peers: list[MonitorService] = []
         self._symbol = symbol
         self._size_threshold = size_threshold
         self._log = _ExchangeLogAdapter(logger, {"exchange": exchange})
@@ -588,16 +593,31 @@ class MonitorService:
                 continue
             self.telegram.enqueue(text)
 
-    def build_wall_report(self) -> str | None:
+    def attach_report_peer(self, peer: MonitorService) -> None:
+        """형제 파이프라인의 벽을 리포트에 합류시킨다 — 읽기 전용 스냅샷 접점만.
+
+        §5.5의 교차 거래소 판정 금지와 무관한 표시 집계다. 판정 경로는 이 접점을
+        절대 읽지 않는다 (wall_report.py 모듈 docstring 참조)."""
+        self._report_peers.append(peer)
+
+    def wall_report_snapshot(self) -> ExchangeWallSnapshot:
         best_bid, best_ask = self.order_book.best_bid, self.order_book.best_ask
-        if not self.tracker.epoch_active or best_bid is None or best_ask is None:
-            return None
-        return format_wall_report(
-            self.wall_registry.walls(),
+        return ExchangeWallSnapshot(
+            label=self._report_label,
+            symbol=self._symbol,
+            walls=self.wall_registry.walls(),
             best_bid=best_bid,
             best_ask=best_ask,
-            symbol=self._symbol,
             size_threshold=self._size_threshold,
+            active=self.tracker.epoch_active and best_bid is not None and best_ask is not None,
+        )
+
+    def build_wall_report(self) -> str | None:
+        own = self.wall_report_snapshot()
+        if not own.active:  # 발송 게이트는 프라이머리 기준 유지 — 형제는 표기로만 반영
+            return None
+        return format_wall_report(
+            [own] + [peer.wall_report_snapshot() for peer in self._report_peers],
             now_epoch_seconds=self._clock(),
         )
 

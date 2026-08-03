@@ -286,6 +286,39 @@ def test_wall_report_skipped_outside_epoch(service):
     assert service.build_wall_report() is None
 
 
+def test_wall_report_joins_peer_exchange_walls(service, tmp_path):
+    # 형제(Coinbase) 파이프라인 벽의 리포트 합류 (표시 집계 — §5.5 판정 결합 아님)
+    from order_monitor.ingestion.coinbase import coinbase_stream_names
+
+    peer = MonitorService(
+        load_config(EXAMPLE_CONFIG),
+        db_path=tmp_path / "peer.db",
+        telegram_token="test-token",
+        exchange="coinbase",
+        telegram_sender=service.telegram,
+    )
+    peer.startup()
+    service.attach_report_peer(peer)
+    start_feed(service)
+
+    # peer epoch 미개시 — 벽 없음과 구분되는 중단 표기만
+    text = service.build_wall_report()
+    assert "⚠ CB: 수집 중단 중" in text
+
+    ticker, matches, l2 = coinbase_stream_names("BTC-USD")
+    peer.on_connected()
+    peer.on_event(ticker, depth_event(bids=(("60998", "1.0"),), asks=(("61002", "1.0"),)))
+    peer.on_event(matches, agg_event(price="61000"))
+    peer.on_event(l2, diff_event(0, 0, bids=[("60500", "300")]))
+
+    text = service.build_wall_report()
+    assert "수집 중단" not in text
+    assert "현재가 BN 61,000 · CB 61,000" in text
+    assert "🧱 [BN] 60,000 — 1,200 BTC" in text  # 다거래소 표시에선 프라이머리도 태그
+    assert "· [CB] 60,500 — 300 BTC" in text
+    peer._store.close()
+
+
 def test_wall_report_boundary_alignment():
     # 정시 발송 (사용자 요청 2026-07-13) — 기동 시각이 아니라 벽시계 경계 기준
     assert seconds_until_boundary(3000.0, 3600.0) == 600.0
